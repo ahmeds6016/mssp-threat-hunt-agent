@@ -1,0 +1,43 @@
+{
+  "client_name": "Acme Manufacturing",
+  "hunt_objective": "Identify living-off-the-land binary (LOLBin) abuse and encoded PowerShell execution on critical endpoints",
+  "hunt_hypothesis": "An attacker has gained initial access and is using LOLBins to download and execute second-stage payloads while evading EDR detections",
+  "time_range": "2024-12-01 to 2024-12-15",
+  "available_data_sources": [
+    "EDR telemetry",
+    "Windows event logs",
+    "Sysmon logs",
+    "PowerShell script-block logs"
+  ],
+  "telemetry_gaps": [
+    "Antivirus logs not centralized",
+    "No AMSI telemetry forwarded"
+  ],
+  "hunt_type": "endpoint",
+  "industry": "Manufacturing",
+  "key_assets": [
+    "OT/SCADA bridge servers",
+    "Engineering workstations",
+    "Domain controllers"
+  ],
+  "priority": "High",
+  "attack_techniques": [
+    "T1059.001",
+    "T1218.005",
+    "T1218.010",
+    "T1053.005"
+  ],
+  "known_benign_patterns": [
+    "SCCM client uses PowerShell encoded commands for policy deployment",
+    "IT uses certutil for internal CA certificate distribution"
+  ],
+  "exclusions": [],
+  "prior_related_incidents": [
+    "INC-2024-1105: EDR alert for Cobalt Strike beacon signature (unconfirmed, resolved as FP)"
+  ],
+  "analyst_notes": "Previous EDR alert may have been a true positive that was prematurely closed. Re-hunting with expanded scope.",
+  "constraints": [
+    "Do not interfere with OT/SCADA systems",
+    "Read-only access to EDR console"
+  ]
+}

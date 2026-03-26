@@ -1,0 +1,26 @@
+# Evidence Appendix
+
+## Evidence Items
+
+| ID | Source | Observation | Significance |
+|----|--------|-------------|--------------|
+{% for e in evidence %}
+| {{ e.evidence_id }} | {{ e.source }} | {{ e.observation[:100] }}{% if e.observation|length > 100 %}...{% endif %} | {{ e.significance }} |
+{% endfor %}
+{% if not evidence %}
+| — | — | No evidence collected | — |
+{% endif %}
+
+## Findings Cross-Reference
+
+{% for f in findings %}
+### {{ f.finding_id }}: {{ f.title }} ({{ f.confidence }})
+
+{{ f.description }}
+
+**Referenced Evidence:**
+{% for e in f.evidence %}
+- {{ e.evidence_id }}: {{ e.observation[:80] }}{% if e.observation|length > 80 %}...{% endif %}
+
+{% endfor %}
+{% endfor %}

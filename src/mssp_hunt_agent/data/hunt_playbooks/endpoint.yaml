@@ -1,0 +1,109 @@
+# Endpoint Hunt Playbook — focused on LOLBins, suspicious process execution, persistence
+name: endpoint
+description: Hunt for endpoint threats including living-off-the-land binaries, malware execution, and persistence mechanisms
+
+queries:
+  - description: "Baseline — normal process execution on high-value endpoints"
+    intent: baseline
+    query_template: >-
+      event_type = "process-start" AND
+      hostname IN ("{{CLIENT}}")
+      | where time >= "{{TIME_RANGE}}"
+      | stats count by process_name, hostname
+      | head 500
+    expected_signal: "Normal process execution baseline per host"
+    false_positives:
+      - Standard system processes
+      - Scheduled update tasks
+    required_sources:
+      - EDR telemetry
+
+  - description: "Anomaly — LOLBin execution (certutil, mshta, regsvr32, rundll32, etc.)"
+    intent: anomaly_candidate
+    query_template: >-
+      event_type = "process-start" AND
+      process_name IN ("certutil.exe", "mshta.exe", "regsvr32.exe", "rundll32.exe",
+                        "wscript.exe", "cscript.exe", "msiexec.exe", "bitsadmin.exe")
+      | where time >= "{{TIME_RANGE}}"
+      | head 200
+    expected_signal: "LOLBin executions — common in attack chains for download/execute"
+    false_positives:
+      - IT admin scripts using certutil for certificate management
+      - Legitimate software installers using msiexec
+      - GPO-deployed scripts using wscript/cscript
+    required_sources:
+      - EDR telemetry
+      - Sysmon logs
+    fallback_query: >-
+      event_type = "process-start" AND
+      command_line CONTAINS "certutil" OR
+      command_line CONTAINS "mshta"
+      | where time >= "{{TIME_RANGE}}"
+      | head 200
+
+  - description: "Anomaly — encoded PowerShell execution"
+    intent: anomaly_candidate
+    query_template: >-
+      event_type = "process-start" AND
+      process_name = "powershell.exe" AND
+      (command_line CONTAINS "-enc" OR
+       command_line CONTAINS "-EncodedCommand" OR
+       command_line CONTAINS "FromBase64")
+      | where time >= "{{TIME_RANGE}}"
+      | head 100
+    expected_signal: "Encoded PowerShell — commonly used for obfuscation"
+    false_positives:
+      - Some vendor deployment tools use encoded PowerShell
+      - SCCM/Intune policy scripts
+    required_sources:
+      - PowerShell script-block logs
+      - EDR telemetry
+
+  - description: "Pivot — scheduled task and service creation for persistence"
+    intent: pivot
+    query_template: >-
+      (event_type = "scheduled-task-create" OR
+       event_type = "service-install")
+      | where time >= "{{TIME_RANGE}}"
+      | head 100
+    expected_signal: "New persistence mechanisms created during hunt window"
+    false_positives:
+      - Software updates installing services
+      - Admin-created scheduled tasks with change tickets
+    required_sources:
+      - Windows event logs
+      - Sysmon logs
+
+  - description: "Confirmation — EDR alerts or AV detections correlated with suspicious execution"
+    intent: confirmation
+    query_template: >-
+      event_type IN ("edr-alert", "av-detection", "threat-detected")
+      | where time >= "{{TIME_RANGE}}"
+      | head 50
+    expected_signal: "Security tool alerts that corroborate hunt findings"
+    false_positives:
+      - Known false positives in AV signatures
+    required_sources:
+      - EDR telemetry
+      - Antivirus logs
+
+triage_checklist:
+  - Verify LOLBin execution context — parent process, command line arguments, user
+  - Check if encoded PowerShell decodes to known-benign vendor scripts
+  - Correlate new scheduled tasks/services with software deployment timeline
+  - Validate file hashes of suspicious executables against threat intel
+  - Check if flagged activity occurred on a known admin workstation during maintenance
+  - Review network connections made by suspicious processes
+
+escalation_criteria:
+  - Encoded PowerShell downloading and executing remote payload
+  - LOLBin used to bypass application whitelisting with suspicious parent chain
+  - Service or scheduled task pointing to a temp/user-writable directory
+  - EDR alert for known malware family or offensive tool (Cobalt Strike, Mimikatz, etc.)
+  - Process hollowing or injection indicators
+
+expected_false_positives:
+  - IT admin tools using LOLBins for legitimate management tasks
+  - Software deployment agents running encoded scripts
+  - Scheduled tasks created by Windows Update
+  - AV false positives on legitimate dual-use admin tools

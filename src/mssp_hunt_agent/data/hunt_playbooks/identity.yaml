@@ -1,0 +1,104 @@
+# Identity Hunt Playbook — focused on credential misuse, account compromise, MFA bypass
+name: identity
+description: Hunt for identity-based threats including credential theft, account takeover, and privilege abuse
+
+queries:
+  - description: "Baseline — normal authentication patterns for in-scope users"
+    intent: baseline
+    query_template: >-
+      activity_type = "authentication-success" AND
+      user IN ("{{CLIENT}}")
+      | where time >= "{{TIME_RANGE}}"
+      | stats count by user, src_ip, country
+      | head 500
+    expected_signal: "Normal authentication baseline per user and location"
+    false_positives:
+      - Legitimate travel
+      - VPN endpoint changes
+    required_sources:
+      - Azure AD sign-in logs
+
+  - description: "Anomaly — failed authentication spikes indicating brute force or credential stuffing"
+    intent: anomaly_candidate
+    query_template: >-
+      activity_type = "authentication-failure"
+      | where time >= "{{TIME_RANGE}}"
+      | stats count as fail_count by user, src_ip
+      | where fail_count > 10
+      | head 200
+    expected_signal: "Users or IPs with anomalous failure volumes"
+    false_positives:
+      - Password rotation confusion
+      - Service accounts with expired credentials
+      - Load balancer health checks
+    required_sources:
+      - Azure AD sign-in logs
+    fallback_query: >-
+      event_type = "logon-failure"
+      | where time >= "{{TIME_RANGE}}"
+      | stats count by user
+      | head 200
+
+  - description: "Anomaly — authentication from unusual countries or impossible travel"
+    intent: anomaly_candidate
+    query_template: >-
+      activity_type = "authentication-success" AND
+      country NOT IN ("US", "CA", "GB")
+      | where time >= "{{TIME_RANGE}}"
+      | head 100
+    expected_signal: "Logins from unexpected geolocations"
+    false_positives:
+      - Employees traveling abroad
+      - VPN exit nodes in foreign countries
+    required_sources:
+      - Azure AD sign-in logs
+
+  - description: "Pivot — MFA prompt bombing / excessive MFA challenges"
+    intent: pivot
+    query_template: >-
+      activity_type = "mfa-challenge" AND
+      result != "success"
+      | where time >= "{{TIME_RANGE}}"
+      | stats count as mfa_fails by user
+      | where mfa_fails > 5
+      | head 50
+    expected_signal: "Users receiving excessive MFA prompts"
+    false_positives:
+      - Users with phone issues
+      - MFA re-enrollment
+    required_sources:
+      - MFA logs
+
+  - description: "Confirmation — privilege escalation events after suspicious auth"
+    intent: confirmation
+    query_template: >-
+      activity_type = "role-assignment" OR
+      activity_type = "privilege-escalation"
+      | where time >= "{{TIME_RANGE}}"
+      | head 50
+    expected_signal: "Privilege changes correlated with suspicious auth events"
+    false_positives:
+      - Planned role changes by IT admins
+    required_sources:
+      - Active Directory event logs
+
+triage_checklist:
+  - Verify flagged accounts against known service account and shared account lists
+  - Cross-reference source IPs with VPN endpoint list and geo-baseline
+  - Check if failed-auth spikes correlate with known password rotation windows
+  - Confirm unusual-country logins against employee travel records or VPN policy
+  - Validate MFA-bombing targets — check if account was subsequently compromised
+  - Review any privilege escalation for change-management ticket correlation
+
+escalation_criteria:
+  - Confirmed authentication from sanctioned/embargoed country with no business justification
+  - Successful login immediately following MFA prompt-bombing pattern
+  - Service account authentication from non-infra IP addresses
+  - Privilege escalation on a Global Admin or Tier-0 account without change ticket
+  - Evidence of token replay or session hijacking
+
+expected_false_positives:
+  - Legitimate remote workers using VPN with foreign exit nodes
+  - IT administrators performing role assignments during maintenance windows
+  - Automated password-reset workflows generating temporary auth failures
+  - Load balancer and monitoring probes triggering auth events

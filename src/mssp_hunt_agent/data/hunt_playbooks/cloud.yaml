@@ -1,0 +1,100 @@
+# Cloud Hunt Playbook — focused on IAM abuse, resource hijacking, configuration tampering
+name: cloud
+description: Hunt for cloud-based threats including IAM abuse, crypto-mining, storage exposure, and configuration drift
+
+queries:
+  - description: "Baseline — normal IAM API call patterns"
+    intent: baseline
+    query_template: >-
+      event_type = "api-call" AND
+      service = "iam"
+      | where time >= "{{TIME_RANGE}}"
+      | stats count by user, action
+      | head 500
+    expected_signal: "Normal IAM usage patterns for baseline comparison"
+    false_positives:
+      - Terraform/IaC deployments
+      - CI/CD pipeline service accounts
+    required_sources:
+      - Cloud audit logs
+
+  - description: "Anomaly — IAM policy changes and new role creation"
+    intent: anomaly_candidate
+    query_template: >-
+      event_type = "api-call" AND
+      action IN ("CreateRole", "AttachRolePolicy", "PutRolePolicy",
+                  "CreateUser", "AddUserToGroup", "SetIAMPolicy")
+      | where time >= "{{TIME_RANGE}}"
+      | head 200
+    expected_signal: "IAM modifications that could indicate privilege persistence"
+    false_positives:
+      - Planned infrastructure changes via IaC
+      - New employee onboarding
+    required_sources:
+      - Cloud audit logs
+      - Cloud IAM logs
+
+  - description: "Anomaly — compute resource creation spikes (crypto-mining indicator)"
+    intent: anomaly_candidate
+    query_template: >-
+      event_type = "api-call" AND
+      action IN ("RunInstances", "CreateVM", "CreateContainerGroup")
+      | where time >= "{{TIME_RANGE}}"
+      | stats count by user, region
+      | where count > 5
+      | head 100
+    expected_signal: "Unusual compute spin-ups that may indicate resource hijacking"
+    false_positives:
+      - Auto-scaling events
+      - Load testing
+    required_sources:
+      - CloudTrail / Activity Log
+
+  - description: "Pivot — storage bucket/blob policy changes or public access grants"
+    intent: pivot
+    query_template: >-
+      event_type = "api-call" AND
+      action IN ("PutBucketPolicy", "PutBucketAcl", "SetBlobAccessTier",
+                  "PutPublicAccessBlock")
+      | where time >= "{{TIME_RANGE}}"
+      | head 100
+    expected_signal: "Storage permission changes that could expose data"
+    false_positives:
+      - Legitimate CDN configuration
+      - DevOps pipeline deploying static sites
+    required_sources:
+      - Cloud audit logs
+
+  - description: "Confirmation — GuardDuty/Defender for Cloud alerts"
+    intent: confirmation
+    query_template: >-
+      event_type IN ("guardduty-finding", "security-center-alert",
+                      "cloud-security-alert")
+      | where time >= "{{TIME_RANGE}}"
+      | head 50
+    expected_signal: "Native cloud security alerts that corroborate hunt findings"
+    false_positives:
+      - Known false positive patterns in cloud security tooling
+    required_sources:
+      - Cloud audit logs
+
+triage_checklist:
+  - Verify IAM changes against change-management tickets and IaC deployment logs
+  - Cross-reference new compute resources with auto-scaling policies
+  - Check storage policy changes against deployment pipelines
+  - Validate that flagged API calls originate from expected CIDR ranges
+  - Confirm whether flagged service accounts are used by authorised automation
+  - Review CloudTrail/Activity Log for UserAgent anomalies (CLI vs console vs SDK)
+
+escalation_criteria:
+  - IAM policy granting * permissions to any principal
+  - Compute resource creation in non-authorised regions
+  - Storage bucket made public without change ticket
+  - Root/organization-admin account used interactively
+  - Cloud security alert for known crypto-miner or backdoor
+
+expected_false_positives:
+  - Infrastructure-as-Code deployments creating and modifying resources in batches
+  - Auto-scaling groups launching instances during peak traffic
+  - DevOps pipelines using elevated IAM roles for deployment
+  - Cloud security tool false positives on legitimate admin actions

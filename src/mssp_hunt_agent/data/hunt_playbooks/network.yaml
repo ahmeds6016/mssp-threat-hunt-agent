@@ -1,0 +1,102 @@
+# Network Hunt Playbook — focused on C2 traffic, data exfiltration, lateral movement
+name: network
+description: Hunt for network-based threats including command and control, DNS tunneling, and data exfiltration
+
+queries:
+  - description: "Baseline — normal DNS resolution patterns"
+    intent: baseline
+    query_template: >-
+      event_type = "dns-query"
+      | where time >= "{{TIME_RANGE}}"
+      | stats count by domain, src_ip
+      | sort -count
+      | head 500
+    expected_signal: "Top resolved domains for baseline comparison"
+    false_positives:
+      - CDN domains with high query counts
+      - Windows telemetry domains
+    required_sources:
+      - DNS logs
+
+  - description: "Anomaly — high-entropy or unusually long DNS queries (tunneling indicators)"
+    intent: anomaly_candidate
+    query_template: >-
+      event_type = "dns-query" AND
+      query_length > 50
+      | where time >= "{{TIME_RANGE}}"
+      | head 200
+    expected_signal: "DNS queries with characteristics of DNS tunneling"
+    false_positives:
+      - DKIM/SPF records with long TXT values
+      - Cloud service auto-discovery queries
+    required_sources:
+      - DNS logs
+    fallback_query: >-
+      event_type = "dns-query"
+      | where time >= "{{TIME_RANGE}}"
+      | head 200
+
+  - description: "Anomaly — connections to rare or newly registered domains"
+    intent: anomaly_candidate
+    query_template: >-
+      event_type = "http-connect" AND
+      domain_age_days < 30
+      | where time >= "{{TIME_RANGE}}"
+      | head 100
+    expected_signal: "Connections to recently registered domains — common C2 trait"
+    false_positives:
+      - New SaaS vendor onboarding
+      - Marketing campaign domains
+    required_sources:
+      - Proxy / web-filter logs
+
+  - description: "Pivot — large outbound data transfers"
+    intent: pivot
+    query_template: >-
+      event_type = "network-flow" AND
+      direction = "outbound" AND
+      bytes_out > 50000000
+      | where time >= "{{TIME_RANGE}}"
+      | head 100
+    expected_signal: "Large outbound transfers that could indicate exfiltration"
+    false_positives:
+      - Cloud backup jobs
+      - Software update uploads
+      - Video conferencing
+    required_sources:
+      - Firewall logs
+      - NetFlow / IPFIX
+
+  - description: "Confirmation — IDS/IPS alerts for known C2 signatures"
+    intent: confirmation
+    query_template: >-
+      event_type IN ("ids-alert", "ips-alert") AND
+      category CONTAINS "command-and-control"
+      | where time >= "{{TIME_RANGE}}"
+      | head 50
+    expected_signal: "Signature-based detections corroborating network anomalies"
+    false_positives:
+      - Outdated signatures matching benign traffic
+    required_sources:
+      - IDS/IPS alerts
+
+triage_checklist:
+  - Analyse DNS query payloads for base64 or hex-encoded data
+  - Verify rare-domain connections against threat intel databases
+  - Check large transfer destinations against known cloud storage and backup targets
+  - Correlate network anomalies with endpoint process telemetry
+  - Validate IDS/IPS alerts with full PCAP where available
+  - Review firewall allow/deny ratios for flagged source IPs
+
+escalation_criteria:
+  - Confirmed DNS tunneling with encoded data payloads
+  - Persistent beaconing to known C2 infrastructure
+  - Large data transfer to unrecognised external destination outside business hours
+  - IDS alert for known malware C2 protocol
+  - TOR or anonymous proxy usage from non-authorised endpoints
+
+expected_false_positives:
+  - Cloud services with unusual domain patterns (Azure CDN, AWS S3)
+  - Backup and replication traffic causing large outbound volume
+  - Security scanning tools triggering IDS/IPS rules
+  - DNS-over-HTTPS queries appearing as anomalous HTTP traffic

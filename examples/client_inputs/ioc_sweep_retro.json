@@ -1,0 +1,99 @@
+{
+  "client_name": "Contoso Financial",
+  "sweep_objective": "Retro hunt for IOCs from phishing campaign targeting finance sector (CERT advisory 2024-11-FA-001)",
+  "time_range": "2024-10-01 to 2024-11-30",
+  "available_data_sources": [
+    "Azure AD sign-in logs",
+    "Firewall logs",
+    "DNS logs",
+    "Proxy / web-filter logs",
+    "EDR telemetry",
+    "VPN logs"
+  ],
+  "telemetry_gaps": [
+    "Email gateway logs not available in Exabeam"
+  ],
+  "hunt_type": "identity",
+  "industry": "Financial Services",
+  "priority": "High",
+  "pre_enrich": true,
+  "analyst_notes": "IOCs sourced from FS-ISAC alert and internal phishing analysis. Two finance employees reported suspicious emails with PDF attachments.",
+  "constraints": [
+    "Read-only access",
+    "Results must be delivered within 24 hours"
+  ],
+  "iocs": [
+    {
+      "value": "185.220.101.34",
+      "ioc_type": "ip",
+      "context": "C2 callback IP from phishing PDF dropper",
+      "source": "FS-ISAC Alert 2024-11-FA-001"
+    },
+    {
+      "value": "91.219.236.12",
+      "ioc_type": "ip",
+      "context": "Secondary C2 IP observed in sandbox analysis",
+      "source": "Internal sandbox"
+    },
+    {
+      "value": "198.51.100.44",
+      "ioc_type": "ip",
+      "context": "Payload hosting server",
+      "source": "FS-ISAC Alert 2024-11-FA-001"
+    },
+    {
+      "value": "evil-finance-login[.]com",
+      "ioc_type": "domain",
+      "context": "Credential harvesting domain mimicking banking portal",
+      "source": "Phishing email analysis"
+    },
+    {
+      "value": "update-secure-docs[.]net",
+      "ioc_type": "domain",
+      "context": "Payload delivery domain",
+      "source": "FS-ISAC Alert 2024-11-FA-001"
+    },
+    {
+      "value": "e99a18c428cb38d5f260853678922e03",
+      "ioc_type": "hash_md5",
+      "context": "MD5 of malicious PDF attachment (Invoice_Nov2024.pdf)",
+      "source": "Internal sandbox"
+    },
+    {
+      "value": "5d41402abc4b2a76b9719d911017c592",
+      "ioc_type": "hash_md5",
+      "context": "MD5 of second-stage DLL payload",
+      "source": "Internal sandbox"
+    },
+    {
+      "value": "a]@contoso-secure-review[.]com",
+      "ioc_type": "email",
+      "context": "Sender address from phishing email",
+      "source": "Phishing email headers"
+    },
+    {
+      "value": "python-requests/2.31.0",
+      "ioc_type": "user_agent",
+      "context": "User-agent string used by dropper for C2 callbacks",
+      "source": "Sandbox network capture"
+    },
+    {
+      "value": "hxxps://evil-finance-login[.]com/portal/login.php",
+      "ioc_type": "url",
+      "context": "Credential harvesting URL from phishing email",
+      "source": "Phishing email body"
+    },
+    {
+      "value": "not-a-valid-ip",
+      "ioc_type": "ip",
+      "context": "Intentionally invalid for testing",
+      "source": "test"
+    },
+    {
+      "value": "185.220.101.34",
+      "ioc_type": "ip",
+      "context": "Duplicate of first IOC for dedup testing",
+      "source": "duplicate"
+    }
+  ]
+}

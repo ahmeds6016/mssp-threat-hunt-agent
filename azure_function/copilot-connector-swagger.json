@@ -1,0 +1,333 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "MSSP Threat Hunt Agent",
+    "description": "Autonomous MSSP threat hunting agent powered by GPT-5.3-chat. Send any security question — the agent processes it asynchronously and returns a request_id to poll for the result. All intelligence is grounded in real Microsoft Sentinel data, MITRE ATT&CK, and CVE databases.",
+    "version": "7.2.0"
+  },
+  "host": "mssphuntagent-fn.azurewebsites.net",
+  "basePath": "/",
+  "schemes": ["https"],
+  "consumes": ["application/json"],
+  "produces": ["application/json"],
+  "securityDefinitions": {
+    "function_key": {
+      "type": "apiKey",
+      "name": "code",
+      "in": "query"
+    }
+  },
+  "security": [{"function_key": []}],
+  "x-ms-connector-metadata": [
+    {
+      "propertyName": "RequestTimeoutInMilliseconds",
+      "propertyValue": "120000"
+    }
+  ],
+  "paths": {
+    "/api/v1/ask": {
+      "post": {
+        "operationId": "askAgent",
+        "summary": "Submit a question to the threat hunt agent (returns immediately)",
+        "description": "Send any security question or investigation request. Returns a request_id immediately (within 1 second). The agent processes the request in the background — use getAskResult to poll for the answer. Examples: 'Are we vulnerable to CVE-2024-3400?', 'Check for brute force in the last 7 days', 'Run a full threat hunt focused on ransomware'.",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "required": ["message"],
+              "properties": {
+                "message": {
+                  "type": "string",
+                  "description": "The security question, investigation request, or threat hunting prompt",
+                  "x-ms-summary": "Message"
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Request accepted — poll getAskResult with the request_id",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "request_id": {
+                  "type": "string",
+                  "description": "Unique request ID to poll for the result (e.g., REQ-a1b2c3d4)",
+                  "x-ms-summary": "Request ID"
+                },
+                "status": {
+                  "type": "string",
+                  "description": "Always 'processing' on initial submit",
+                  "x-ms-summary": "Status"
+                },
+                "message": {
+                  "type": "string",
+                  "description": "Instructions for polling",
+                  "x-ms-summary": "Message"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ask/{request_id}": {
+      "get": {
+        "operationId": "getAskResult",
+        "summary": "Get the result of a submitted question",
+        "description": "Poll this endpoint with the request_id from askAgent. Returns status 'processing' while the agent is working, or 'completed' with the full response when done. For simple queries this typically takes 15-45 seconds. If the result contains route='campaign', a deep investigation was started — use getCampaign with the campaign_id to track it.",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "description": "The request_id returned from askAgent (e.g., REQ-a1b2c3d4)",
+            "x-ms-summary": "Request ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Request result (may be processing or completed)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "request_id": {
+                  "type": "string",
+                  "description": "The request identifier",
+                  "x-ms-summary": "Request ID"
+                },
+                "status": {
+                  "type": "string",
+                  "description": "processing, completed, or error",
+                  "x-ms-summary": "Status"
+                },
+                "route": {
+                  "type": "string",
+                  "description": "How the query was routed: 'chat' or 'campaign' (only present when completed)",
+                  "x-ms-summary": "Route"
+                },
+                "response": {
+                  "type": "string",
+                  "description": "The agent's full analysis response in markdown (only present when completed)",
+                  "x-ms-summary": "Response"
+                },
+                "campaign_id": {
+                  "type": "string",
+                  "description": "Campaign ID if routed to campaign — poll with getCampaign (only present for campaign route)",
+                  "x-ms-summary": "Campaign ID"
+                },
+                "error": {
+                  "type": "string",
+                  "description": "Error message if status is 'error'",
+                  "x-ms-summary": "Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request not found",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "error": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/campaigns/{campaign_id}": {
+      "get": {
+        "operationId": "getCampaign",
+        "summary": "Get campaign status and progress",
+        "description": "Returns the current status of a campaign including phase progress, hypothesis count, findings count, and any errors. Use this to poll a running campaign until status is 'completed' or 'failed'. Only needed when getAskResult returns route='campaign'.",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "description": "The campaign ID returned from getAskResult (e.g., CAMP-96ede78f)",
+            "x-ms-summary": "Campaign ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Campaign status and progress",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "campaign_id": {
+                  "type": "string",
+                  "description": "Campaign identifier",
+                  "x-ms-summary": "Campaign ID"
+                },
+                "status": {
+                  "type": "string",
+                  "description": "Current status: starting, running, completed, or failed",
+                  "x-ms-summary": "Status"
+                },
+                "client_name": {
+                  "type": "string",
+                  "description": "Client name",
+                  "x-ms-summary": "Client"
+                },
+                "current_phase": {
+                  "type": "string",
+                  "description": "Current campaign phase",
+                  "x-ms-summary": "Phase"
+                },
+                "hypotheses_count": {
+                  "type": "integer",
+                  "description": "Number of hypotheses generated",
+                  "x-ms-summary": "Hypotheses"
+                },
+                "findings_count": {
+                  "type": "integer",
+                  "description": "Number of findings discovered",
+                  "x-ms-summary": "Findings"
+                },
+                "error": {
+                  "type": "string",
+                  "description": "Error message if failed",
+                  "x-ms-summary": "Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Campaign not found",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "error": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/campaigns/{campaign_id}/report": {
+      "get": {
+        "operationId": "getCampaignReport",
+        "summary": "Get the final campaign report",
+        "description": "Returns the completed campaign report with executive summary, findings, recommendations, and MITRE ATT&CK mapping. Only available after the campaign status is 'completed'.",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "description": "The campaign ID",
+            "x-ms-summary": "Campaign ID"
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "type": "string",
+            "description": "Report format: json or markdown",
+            "default": "json",
+            "enum": ["json", "markdown"],
+            "x-ms-summary": "Format"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Campaign report",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "campaign_id": {
+                  "type": "string",
+                  "x-ms-summary": "Campaign ID"
+                },
+                "title": {
+                  "type": "string",
+                  "x-ms-summary": "Title"
+                },
+                "executive_summary": {
+                  "type": "string",
+                  "x-ms-summary": "Executive Summary"
+                },
+                "findings_count": {
+                  "type": "object",
+                  "properties": {
+                    "true_positive": {"type": "integer"},
+                    "false_positive": {"type": "integer"},
+                    "inconclusive": {"type": "integer"}
+                  },
+                  "x-ms-summary": "Findings Count"
+                },
+                "risk_score": {
+                  "type": "number",
+                  "x-ms-summary": "Risk Score"
+                },
+                "recommendations": {
+                  "type": "array",
+                  "items": {"type": "string"},
+                  "x-ms-summary": "Recommendations"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Report not available yet",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "error": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "operationId": "healthCheck",
+        "summary": "Check agent health and connectivity",
+        "description": "Returns the agent's health status including LLM connectivity, Sentinel adapter status, and version information.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Agent health status",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "x-ms-summary": "Status"
+                },
+                "version": {
+                  "type": "string",
+                  "x-ms-summary": "Version"
+                },
+                "adapter_mode": {
+                  "type": "string",
+                  "x-ms-summary": "Adapter Mode"
+                },
+                "llm_enabled": {
+                  "type": "boolean",
+                  "x-ms-summary": "LLM Enabled"
+                },
+                "llm_adapter": {
+                  "type": "string",
+                  "x-ms-summary": "LLM Adapter"
+                },
+                "agent_enabled": {
+                  "type": "boolean",
+                  "x-ms-summary": "Agent Enabled"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

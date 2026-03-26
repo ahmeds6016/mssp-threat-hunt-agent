@@ -1,0 +1,45 @@
+{
+  "client_name": "Contoso Financial",
+  "hunt_objective": "Detect compromised credentials used for unauthorized access from foreign IP addresses",
+  "hunt_hypothesis": "Threat actor obtained VPN credentials via phishing and is authenticating from Eastern European IP ranges outside normal business hours",
+  "time_range": "2024-11-01 to 2024-11-30",
+  "available_data_sources": [
+    "Azure AD sign-in logs",
+    "VPN logs",
+    "MFA logs",
+    "Active Directory event logs"
+  ],
+  "telemetry_gaps": [
+    "CASB logs not available",
+    "No conditional access policy telemetry"
+  ],
+  "hunt_type": "identity",
+  "industry": "Financial Services",
+  "key_assets": [
+    "Domain Controllers",
+    "Exchange Online",
+    "Core Banking Application"
+  ],
+  "priority": "High",
+  "attack_techniques": [
+    "T1078",
+    "T1110.003",
+    "T1556.006"
+  ],
+  "known_benign_patterns": [
+    "IT admin team uses VPN from home IPs in US and Canada",
+    "Backup service account authenticates every 6 hours from 10.0.0.50"
+  ],
+  "exclusions": [
+    "svc_backup@contoso.com",
+    "svc_monitoring@contoso.com"
+  ],
+  "prior_related_incidents": [
+    "INC-2024-0892: Phishing campaign targeting finance department (October 2024)"
+  ],
+  "analyst_notes": "Client reported suspicious MFA prompts from two finance team members. No confirmed compromise yet. CISO requested proactive hunt.",
+  "constraints": [
+    "Hunt must complete within 48 hours",
+    "No active containment actions without client approval"
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "client_name": "Contoso Financial",
+  "time_range": "2024-11-01 to 2024-11-30",
+  "declared_data_sources": [
+    "Azure AD sign-in logs",
+    "VPN logs",
+    "MFA logs",
+    "EDR telemetry",
+    "Firewall logs",
+    "DNS logs",
+    "CASB logs"
+  ],
+  "hunt_types_of_interest": ["identity", "endpoint", "network", "cloud"],
+  "analyst_notes": "Pre-engagement profiling before Q1 2025 proactive hunt."
+}

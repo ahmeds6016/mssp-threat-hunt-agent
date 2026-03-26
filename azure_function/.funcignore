@@ -1,0 +1,17 @@
+.venv/
+.git/
+.gitignore
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.*
+tests/
+output/
+.cache/
+*.egg-info/
+.hunt_agent.db
+examples/
+copilot/
+infra/

@@ -1,0 +1,719 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "MSSP Threat Hunt Agent",
+    "description": "Agentic MSSP threat hunting assistant powered by GPT-5.3-chat. Ask security questions, hunt for threats, look up CVEs, and get MITRE ATT&CK mappings — all grounded in your Microsoft Sentinel data.",
+    "version": "7.1.0"
+  },
+  "servers": [
+    {
+      "url": "https://mssphuntagent-fn.azurewebsites.net"
+    }
+  ],
+  "paths": {
+    "/api/v1/ask": {
+      "post": {
+        "operationId": "askAgent",
+        "summary": "Ask the threat hunt agent anything — it auto-routes simple vs complex queries",
+        "description": "Send any security question or investigation request. GPT-5.3 automatically classifies complexity: simple queries (CVE lookups, single hunts, detection rules) get an immediate response; complex investigations (full threat hunts, multi-vector analysis, posture reviews) launch an autonomous campaign and return a campaign_id to poll. Use this as the single entry point for all analyst requests.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["message"],
+                "properties": {
+                  "message": {
+                    "type": "string",
+                    "description": "The security question, investigation request, or threat hunting prompt",
+                    "example": "Are we vulnerable to CVE-2024-3400?"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Immediate chat response (simple query)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Campaign started (complex investigation) — poll getCampaign for status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskCampaignResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat": {
+      "post": {
+        "operationId": "chatWithAgent",
+        "summary": "Send a message to the threat hunt agent",
+        "description": "Send a natural language message and receive an AI-powered threat analysis response. The agent can look up CVEs, search MITRE ATT&CK, run KQL queries against Sentinel, assess risk, and more.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["message"],
+                "properties": {
+                  "message": {
+                    "type": "string",
+                    "description": "The security question or threat hunting request",
+                    "example": "Are we vulnerable to CVE-2024-3400?"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Agent response with analysis results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/campaigns": {
+      "post": {
+        "operationId": "startCampaign",
+        "summary": "Start an autonomous threat hunt campaign",
+        "description": "Launches a multi-phase autonomous hunt that profiles the environment, generates hypotheses, executes KQL hunts, classifies findings, and produces a professional report. Returns immediately with a campaign_id — poll getCampaign for status updates.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartCampaignRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Campaign started successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignStarted"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listCampaigns",
+        "summary": "List all hunt campaigns",
+        "description": "Returns a list of all campaigns (running, completed, and failed).",
+        "responses": {
+          "200": {
+            "description": "List of campaigns",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/campaigns/{campaign_id}": {
+      "get": {
+        "operationId": "getCampaign",
+        "summary": "Get campaign status and progress",
+        "description": "Returns the current status of a campaign including phase progress, hypothesis count, findings count, and any errors. Use this to poll a running campaign until status is 'completed' or 'failed'.",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "description": "The campaign ID returned from startCampaign (e.g., CAMP-96ede78f)",
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Campaign status and progress",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignStatus"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Campaign not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/campaigns/{campaign_id}/report": {
+      "get": {
+        "operationId": "getCampaignReport",
+        "summary": "Get the final campaign report",
+        "description": "Returns the completed campaign report with executive summary, findings, recommendations, and MITRE ATT&CK mapping. Only available after the campaign reaches the DELIVER phase. Use format=markdown for a readable text report.",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "description": "The campaign ID",
+            "schema": {"type": "string"}
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "Report format: json for structured data, markdown for readable text",
+            "schema": {"type": "string", "enum": ["json", "markdown"], "default": "json"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Campaign report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignReport"
+                }
+              },
+              "text/markdown": {
+                "schema": {
+                  "type": "string",
+                  "description": "Full campaign report in markdown format"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Report not available yet",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "operationId": "healthCheck",
+        "summary": "Check agent health status",
+        "description": "Returns the current status of the agent including LLM and Sentinel connectivity.",
+        "responses": {
+          "200": {
+            "description": "Health status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "StartCampaignRequest": {
+        "type": "object",
+        "properties": {
+          "client_name": {
+            "type": "string",
+            "description": "Client name for the campaign (defaults to configured client)",
+            "example": "Acme Corp"
+          },
+          "time_range": {
+            "type": "string",
+            "description": "Time range to hunt over (e.g., 'last 7 days', 'last 30 days')",
+            "default": "last 30 days"
+          },
+          "focus_areas": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Optional focus areas like 'ransomware', 'credential theft', 'lateral movement'"
+          },
+          "max_hypotheses": {
+            "type": "integer",
+            "description": "Maximum number of hypotheses to generate (1-20)",
+            "default": 10
+          },
+          "max_total_queries": {
+            "type": "integer",
+            "description": "Maximum KQL queries across the campaign",
+            "default": 200
+          },
+          "max_duration_minutes": {
+            "type": "integer",
+            "description": "Maximum campaign duration in minutes",
+            "default": 60
+          }
+        }
+      },
+      "CampaignStarted": {
+        "type": "object",
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "description": "Unique campaign identifier for polling (e.g., CAMP-96ede78f)"
+          },
+          "status": {
+            "type": "string",
+            "description": "Initial status (always 'starting')",
+            "enum": ["starting"]
+          },
+          "client_name": {
+            "type": "string",
+            "description": "Client name for the campaign"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable status message"
+          }
+        }
+      },
+      "CampaignList": {
+        "type": "object",
+        "properties": {
+          "campaigns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CampaignSummary"
+            }
+          }
+        }
+      },
+      "CampaignSummary": {
+        "type": "object",
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "description": "Unique campaign identifier"
+          },
+          "status": {
+            "type": "string",
+            "description": "Campaign status",
+            "enum": ["starting", "running", "completed", "failed"]
+          },
+          "current_phase": {
+            "type": "string",
+            "description": "Current campaign phase"
+          },
+          "client_name": {
+            "type": "string",
+            "description": "Client name"
+          },
+          "findings_count": {
+            "type": "integer",
+            "description": "Number of findings discovered so far"
+          },
+          "started_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp when campaign started"
+          }
+        }
+      },
+      "CampaignStatus": {
+        "type": "object",
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "description": "Unique campaign identifier"
+          },
+          "status": {
+            "type": "string",
+            "description": "Campaign status: starting, running, completed, or failed",
+            "enum": ["starting", "running", "completed", "failed"]
+          },
+          "current_phase": {
+            "type": "string",
+            "description": "Current phase: INDEX_REFRESH, HYPOTHESIZE, EXECUTE, CONCLUDE, or DELIVER",
+            "enum": ["INDEX_REFRESH", "HYPOTHESIZE", "EXECUTE", "CONCLUDE", "DELIVER"]
+          },
+          "client_name": {
+            "type": "string",
+            "description": "Client name"
+          },
+          "hypotheses_count": {
+            "type": "integer",
+            "description": "Number of hypotheses generated"
+          },
+          "findings_count": {
+            "type": "integer",
+            "description": "Number of findings discovered"
+          },
+          "total_kql_queries": {
+            "type": "integer",
+            "description": "Total KQL queries executed"
+          },
+          "started_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp when campaign started"
+          },
+          "completed_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp when campaign completed (null if running)"
+          },
+          "errors": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Any errors encountered during the campaign"
+          },
+          "phase_results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PhaseResult"
+            },
+            "description": "Results from each completed phase"
+          }
+        }
+      },
+      "PhaseResult": {
+        "type": "object",
+        "properties": {
+          "phase": {
+            "type": "string",
+            "description": "Phase name"
+          },
+          "status": {
+            "type": "string",
+            "description": "Phase status (completed, failed)"
+          },
+          "summary": {
+            "type": "string",
+            "description": "Human-readable summary of what this phase accomplished"
+          }
+        }
+      },
+      "CampaignReport": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Report title"
+          },
+          "executive_summary": {
+            "type": "string",
+            "description": "Executive summary of the hunt campaign"
+          },
+          "campaign_id": {
+            "type": "string"
+          },
+          "client_name": {
+            "type": "string"
+          },
+          "time_range": {
+            "type": "string"
+          },
+          "total_hypotheses": {
+            "type": "integer",
+            "description": "Total hypotheses investigated"
+          },
+          "total_findings": {
+            "type": "integer",
+            "description": "Total findings discovered"
+          },
+          "total_kql_queries": {
+            "type": "integer",
+            "description": "Total KQL queries executed"
+          },
+          "risk_level": {
+            "type": "string",
+            "description": "Overall risk assessment",
+            "enum": ["Critical", "High", "Medium", "Low", "Informational"]
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "description": "Detailed findings from the hunt"
+          },
+          "recommendations": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Actionable recommendations based on findings"
+          },
+          "mitre_techniques": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "MITRE ATT&CK techniques observed"
+          },
+          "markdown": {
+            "type": "string",
+            "description": "Full report in markdown format"
+          }
+        }
+      },
+      "Finding": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Finding title"
+          },
+          "severity": {
+            "type": "string",
+            "description": "Finding severity",
+            "enum": ["Critical", "High", "Medium", "Low", "Informational"]
+          },
+          "description": {
+            "type": "string",
+            "description": "Detailed description of what was found"
+          },
+          "evidence_summary": {
+            "type": "string",
+            "description": "Summary of evidence supporting this finding"
+          },
+          "mitre_techniques": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Related MITRE ATT&CK techniques"
+          },
+          "recommendation": {
+            "type": "string",
+            "description": "Recommended remediation action"
+          }
+        }
+      },
+      "ChatResponse": {
+        "type": "object",
+        "properties": {
+          "intent": {
+            "type": "string",
+            "description": "Detected intent category"
+          },
+          "confidence": {
+            "type": "number",
+            "description": "Confidence score (0-1)"
+          },
+          "response": {
+            "type": "string",
+            "description": "The agent's analysis response in markdown format"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Unique run identifier for tracking"
+          },
+          "follow_up_suggestions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Suggested follow-up questions"
+          },
+          "thinking_trace": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Steps the agent took during analysis"
+          },
+          "error": {
+            "type": "string",
+            "description": "Error message if something went wrong"
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "adapter_mode": {
+            "type": "string"
+          },
+          "llm_enabled": {
+            "type": "boolean"
+          },
+          "llm_adapter": {
+            "type": "string"
+          },
+          "agent_enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AskResponse": {
+        "type": "object",
+        "description": "Immediate response for simple queries (route=chat)",
+        "properties": {
+          "route": {
+            "type": "string",
+            "description": "Always 'chat' for immediate responses",
+            "enum": ["chat"]
+          },
+          "routing_confidence": {
+            "type": "number",
+            "description": "How confident the classifier was in routing (0-1)"
+          },
+          "routing_reasoning": {
+            "type": "string",
+            "description": "Why this was classified as a simple query"
+          },
+          "intent": {
+            "type": "string",
+            "description": "Detected intent category"
+          },
+          "confidence": {
+            "type": "number",
+            "description": "Confidence score (0-1)"
+          },
+          "response": {
+            "type": "string",
+            "description": "The agent's analysis response in markdown format"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Unique run identifier for tracking"
+          },
+          "follow_up_suggestions": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Suggested follow-up questions"
+          },
+          "thinking_trace": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Steps the agent took during analysis"
+          },
+          "error": {
+            "type": "string",
+            "description": "Error message if something went wrong"
+          }
+        }
+      },
+      "AskCampaignResponse": {
+        "type": "object",
+        "description": "Async campaign started for complex investigations (route=campaign)",
+        "properties": {
+          "route": {
+            "type": "string",
+            "description": "Always 'campaign' for deep investigations",
+            "enum": ["campaign"]
+          },
+          "routing_confidence": {
+            "type": "number",
+            "description": "How confident the classifier was in routing (0-1)"
+          },
+          "routing_reasoning": {
+            "type": "string",
+            "description": "Why this was classified as a deep investigation"
+          },
+          "campaign_id": {
+            "type": "string",
+            "description": "Unique campaign identifier for polling (e.g., CAMP-96ede78f)"
+          },
+          "status": {
+            "type": "string",
+            "description": "Initial status (always 'starting')",
+            "enum": ["starting"]
+          },
+          "client_name": {
+            "type": "string",
+            "description": "Client name for the campaign"
+          },
+          "focus_areas": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Focus areas extracted from the analyst's message"
+          },
+          "time_range": {
+            "type": "string",
+            "description": "Time range extracted from the message"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable status message with polling instructions"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "function_key": {
+        "type": "apiKey",
+        "name": "code",
+        "in": "query"
+      }
+    }
+  },
+  "security": [
+    {
+      "function_key": []
+    }
+  ]
+}

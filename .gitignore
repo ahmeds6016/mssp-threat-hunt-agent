@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Environment and secrets
+.env
+local.settings.json
+*.pem
+*.key
+
+# Cache
+.cache/
+.pytest_cache/
+.mypy_cache/
+
+# Build artifacts
+build_staging/
+*.zip
+deploy.zip
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Azure Functions
+.python_packages/
+bin/
+obj/
+
+# Temp
+tmp/

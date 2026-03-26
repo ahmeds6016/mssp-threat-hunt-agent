@@ -1,0 +1,5 @@
+{
+  "dce_endpoint": "https://mssp-hunt-agent-dce-77u5.eastus-1.ingest.monitor.azure.com",
+  "dcr_immutable_id": "dcr-cfff7f9b2e0c4bf38b3aefbf91ad565f",
+  "stream_name": "Custom-AttackSimulation_CL"
+}

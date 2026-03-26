@@ -1,0 +1,17 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AzureWebJobsStorage": "",
+    "AZURE_TENANT_ID": "<your-tenant-id>",
+    "AZURE_CLIENT_ID": "<your-client-id>",
+    "AZURE_CLIENT_SECRET": "<your-client-secret>",
+    "SENTINEL_WORKSPACE_ID": "<your-workspace-id>",
+    "AZURE_OPENAI_ENDPOINT": "<your-openai-endpoint>",
+    "AZURE_OPENAI_API_KEY": "<your-openai-api-key>",
+    "AZURE_OPENAI_DEPLOYMENT": "gpt-5.3-chat",
+    "DEFAULT_CLIENT_NAME": "YourClientName",
+    "ADAPTER_MODE": "real",
+    "AGENT_ENABLED": "true"
+  }
+}

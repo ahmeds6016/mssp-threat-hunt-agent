@@ -1,0 +1,29 @@
+name: "Business Email Compromise (BEC) Playbook"
+description: "Hunt for BEC indicators: compromised mailbox access, mail forwarding rules, impossible travel, and credential harvesting."
+severity: high
+techniques:
+  - T1078  # Valid Accounts
+  - T1098.002  # Account Manipulation: Exchange Transport Rules
+  - T1114.002  # Email Collection: Remote Email Collection
+  - T1566.002  # Phishing: Spearphishing Link
+
+steps:
+  - action: hunt
+    hypothesis: "Search for anomalous sign-in patterns including impossible travel, unfamiliar locations, or legacy protocol usage"
+    techniques: [T1078]
+    time_range: "last 14 days"
+
+  - action: hunt
+    hypothesis: "Check for new inbox rules or mail forwarding rules that redirect emails to external addresses"
+    techniques: [T1098.002]
+    time_range: "last 14 days"
+
+  - action: hunt
+    hypothesis: "Look for mailbox access from unusual IP ranges or user agents suggesting API-based email collection"
+    techniques: [T1114.002]
+    time_range: "last 14 days"
+
+  - action: hunt
+    hypothesis: "Detect conditional access policy changes or MFA modification attempts"
+    techniques: [T1078]
+    time_range: "last 14 days"

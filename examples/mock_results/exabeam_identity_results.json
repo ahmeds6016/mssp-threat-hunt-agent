@@ -1,0 +1,64 @@
+{
+  "description": "Sample mock results for identity foreign-auth hunt",
+  "query_results": [
+    {
+      "query_id": "Q-sample01",
+      "query_text": "activity_type = \"authentication-success\" | where time >= \"2024-11-01 to 2024-11-30\" | stats count by user, src_ip, country | head 500",
+      "status": "success",
+      "result_count": 45,
+      "execution_time_ms": 1250,
+      "events": [
+        {
+          "timestamp": "2024-11-15T03:22:41Z",
+          "event_type": "authentication-success",
+          "user": "j.martinez",
+          "src_ip": "185.220.101.34",
+          "hostname": "WS-FIN-012",
+          "domain": "login.microsoftonline.com",
+          "fields": {"country": "RO", "mfa_result": "not_challenged"}
+        },
+        {
+          "timestamp": "2024-11-15T03:24:10Z",
+          "event_type": "authentication-success",
+          "user": "j.martinez",
+          "src_ip": "185.220.101.34",
+          "hostname": "WS-FIN-012",
+          "domain": "outlook.office365.com",
+          "fields": {"country": "RO", "mfa_result": "not_challenged"}
+        },
+        {
+          "timestamp": "2024-11-18T14:05:33Z",
+          "event_type": "authentication-success",
+          "user": "k.chen",
+          "src_ip": "10.10.5.22",
+          "hostname": "WS-FIN-087",
+          "domain": "corp.local",
+          "fields": {"country": "US", "mfa_result": "success"}
+        }
+      ]
+    },
+    {
+      "query_id": "Q-sample02",
+      "query_text": "activity_type = \"authentication-failure\" | where time >= \"2024-11-01 to 2024-11-30\" | stats count as fail_count by user, src_ip | where fail_count > 10 | head 200",
+      "status": "success",
+      "result_count": 8,
+      "execution_time_ms": 890,
+      "events": [
+        {
+          "timestamp": "2024-11-14T22:15:00Z",
+          "event_type": "authentication-failure",
+          "user": "j.martinez",
+          "src_ip": "185.220.101.34",
+          "fields": {"fail_count": 23, "country": "RO"}
+        },
+        {
+          "timestamp": "2024-11-14T22:16:30Z",
+          "event_type": "authentication-failure",
+          "user": "a.patel",
+          "src_ip": "91.219.236.12",
+          "fields": {"fail_count": 15, "country": "UA"}
+        }
+      ]
+    }
+  ]
+}
