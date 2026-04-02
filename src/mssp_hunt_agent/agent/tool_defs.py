@@ -300,11 +300,45 @@ class ToolExecutor:
 
     # ── Individual handlers ──────────────────────────────────────
 
+    # KQL guardrails — enforced before every query execution
+    _KQL_BANNED_PATTERNS = [
+        (r"search\s+\*", "Blocked: 'search *' scans all tables"),
+        (r"union\s+\*", "Blocked: 'union *' joins all tables"),
+        (r"\.\s*delete\b", "Blocked: destructive operation"),
+        (r"\.\s*drop\b", "Blocked: destructive operation"),
+        (r"\.\s*set-or-replace\b", "Blocked: destructive operation"),
+        (r"\.\s*create-or-alter\b", "Blocked: management operation"),
+    ]
+    _KQL_MAX_TIMESPAN = "30d"
+
+    def _enforce_kql_guardrails(self, query: str) -> str | None:
+        """Validate KQL before execution. Returns error message or None if safe."""
+        import re
+
+        if not query or not query.strip():
+            return "Empty query"
+
+        for pattern, message in self._KQL_BANNED_PATTERNS:
+            if re.search(pattern, query, re.IGNORECASE):
+                return message
+
+        # Enforce max result limit if no explicit limit in query
+        if "| take " not in query.lower() and "| limit " not in query.lower() and "| count" not in query.lower():
+            if "| summarize" not in query.lower() and "| distinct" not in query.lower():
+                return "Query must include a result limiter (| take N, | limit N, | summarize, | distinct, or | count)"
+
+        return None
+
     def _handle_run_kql_query(self, args: dict) -> str:
         from mssp_hunt_agent.models.hunt_models import ExabeamQuery, QueryIntent
 
         query = args.get("query", "")
         max_results = min(args.get("max_results", 100), self.config.agent_loop_max_kql_results)
+
+        # Mandatory guardrails — block dangerous queries before execution
+        guardrail_error = self._enforce_kql_guardrails(query)
+        if guardrail_error:
+            return json.dumps({"error": guardrail_error, "query": query})
 
         adapter = self._get_sentinel_adapter()
         eq = ExabeamQuery(

@@ -35,7 +35,7 @@ _COLUMN_MAP: dict[str, str] = {
     "IpAddress": "src_ip",
     "ClientIP": "src_ip",
     "SourceAddress": "src_ip",
-    "InitiatingProcessSHA256": "src_ip",  # fall-through only
+    "InitiatingProcessSHA256": "file_hash",
     # Destination IP
     "DestinationIp": "dst_ip",
     "DestinationAddress": "dst_ip",

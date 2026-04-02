@@ -18,17 +18,19 @@ class AgentController:
     """Process natural-language prompts and return structured responses.
 
     When an LLM adapter is provided (or config.llm_enabled), routes to the
-    agentic tool-calling loop (V6). Otherwise falls back to rule-based
-    ReasoningChain (V5.1).
+    agentic tool-calling loop (V7.2). Otherwise falls back to rule-based
+    ReasoningChain.
     """
 
     def __init__(
         self,
         config: HuntAgentConfig | None = None,
         llm: LLMAdapter | None = None,
+        request_id: str = "",
     ) -> None:
         self.config = config or HuntAgentConfig.from_env()
         self.llm = llm
+        self._rid = request_id
         self.parser = IntentParser()
         self.router = ActionRouter(self.config)
 
@@ -67,7 +69,7 @@ class AgentController:
                 error="empty_message",
             )
 
-        # Agentic path: GPT-4o tool-calling loop (V6)
+        # Agentic path: GPT-5.3-chat tool-calling loop (V7.2)
         if self.llm is not None:
             try:
                 return self._run_agent_loop(message)
@@ -101,6 +103,7 @@ class AgentController:
             llm=self.llm,
             tool_executor=tool_executor,
             system_prompt=system_prompt,
+            request_id=self._rid,
         )
 
         result = loop.run(message)

@@ -82,6 +82,14 @@ class ExecutePhaseRunner(PhaseRunner):
                 h_idx + 1, len(state.hypotheses), hypothesis.title, hypothesis.priority_score,
             )
             hypothesis.status = "in_progress"
+            self._log(
+                "hypothesis_started",
+                index=h_idx + 1,
+                total=len(state.hypotheses),
+                title=hypothesis.title,
+                priority=round(hypothesis.priority_score, 2),
+                techniques=hypothesis.mitre_techniques[:3],
+            )
 
             # Build per-hypothesis prompt
             prior_summary = ""
@@ -209,12 +217,28 @@ class ExecutePhaseRunner(PhaseRunner):
                             result_str = json.dumps({"error": f"Tool {tool_name} failed: {tool_exc}"})
                             logger.warning("Tool %s execution failed: %s", tool_name, tool_exc)
 
+                        duration_ms = int((time.monotonic() - t0) * 1000)
                         result.tool_calls += 1
                         self.budget.record_tool_call()
                         if tool_name == "run_kql_query":
                             result.kql_queries_run += 1
                             hypothesis.queries_executed += 1
                             self.budget.record_query()
+                            self._log(
+                                "query_executed",
+                                hypothesis=hypothesis.title[:80],
+                                query=str(args.get("query", ""))[:150],
+                                results=len(result_str),
+                                ms=duration_ms,
+                            )
+                        else:
+                            self._log(
+                                "tool_executed",
+                                phase="execute",
+                                tool=tool_name,
+                                ms=duration_ms,
+                                hypothesis=hypothesis.title[:80],
+                            )
 
                         # Truncate with warning
                         truncated = result_str[:8000]
@@ -254,10 +278,27 @@ class ExecutePhaseRunner(PhaseRunner):
                 except Exception:
                     pass
 
+            # Log findings for this hypothesis
+            for f in hypothesis_findings:
+                self._log(
+                    "finding_discovered",
+                    hypothesis=hypothesis.title[:80],
+                    severity=f.severity.value if hasattr(f.severity, "value") else str(f.severity),
+                    title=f.title[:120],
+                    classification=f.classification.value if hasattr(f.classification, "value") else str(f.classification),
+                )
+
             # Wrap up hypothesis
             hypothesis.status = "completed"
             hypothesis.findings_count = len(hypothesis_findings)
             all_findings.extend(hypothesis_findings)
+            self._log(
+                "hypothesis_completed",
+                index=h_idx + 1,
+                title=hypothesis.title[:80],
+                findings=len(hypothesis_findings),
+                queries=hypothesis.queries_executed,
+            )
 
         # Store findings on campaign state
         state.findings.extend(all_findings)

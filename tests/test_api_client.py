@@ -108,7 +108,8 @@ class TestSentinelQuery:
             with pytest.raises(SentinelAPIError, match="400"):
                 client.query("INVALID KQL !!!")
 
-    def test_429_raises_transient_error(self, client: SentinelQueryClient) -> None:
+    @patch("mssp_hunt_agent.adapters.sentinel.api_client.time.sleep")
+    def test_429_raises_transient_error(self, _sleep, client: SentinelQueryClient) -> None:
         mock_resp = MagicMock(spec=httpx.Response)
         mock_resp.status_code = 429
         mock_resp.text = "Too many requests"
@@ -117,7 +118,8 @@ class TestSentinelQuery:
             with pytest.raises(SentinelTransientError):
                 client.query("SecurityEvent | limit 1")
 
-    def test_500_raises_transient_error(self, client: SentinelQueryClient) -> None:
+    @patch("mssp_hunt_agent.adapters.sentinel.api_client.time.sleep")
+    def test_500_raises_transient_error(self, _sleep, client: SentinelQueryClient) -> None:
         mock_resp = MagicMock(spec=httpx.Response)
         mock_resp.status_code = 500
         mock_resp.text = "Internal server error"
@@ -126,8 +128,9 @@ class TestSentinelQuery:
             with pytest.raises(SentinelTransientError):
                 client.query("SecurityEvent | limit 1")
 
+    @patch("mssp_hunt_agent.adapters.sentinel.api_client.time.sleep")
     def test_401_invalidates_token(
-        self, client: SentinelQueryClient, mock_auth: MagicMock
+        self, _sleep, client: SentinelQueryClient, mock_auth: MagicMock
     ) -> None:
         mock_resp = MagicMock(spec=httpx.Response)
         mock_resp.status_code = 401
@@ -137,9 +140,11 @@ class TestSentinelQuery:
             with pytest.raises(SentinelTransientError, match="401"):
                 client.query("SecurityEvent | limit 1")
 
-        mock_auth.invalidate.assert_called_once()
+        # Retries call invalidate on each attempt
+        assert mock_auth.invalidate.call_count == client._MAX_RETRIES + 1
 
-    def test_connection_error_raises_transient(self, client: SentinelQueryClient) -> None:
+    @patch("mssp_hunt_agent.adapters.sentinel.api_client.time.sleep")
+    def test_connection_error_raises_transient(self, _sleep, client: SentinelQueryClient) -> None:
         with patch.object(
             client._client, "post", side_effect=httpx.ConnectError("connection refused")
         ):

@@ -112,6 +112,16 @@ class HypothesizePhaseRunner(PhaseRunner):
         # Store on campaign state
         state.hypotheses = viable
 
+        # Log each hypothesis
+        for h in viable:
+            self._log(
+                "hypothesis_generated",
+                title=h.title[:120],
+                priority=round(h.priority_score, 2),
+                techniques=h.mitre_techniques[:3],
+                tactics=h.mitre_tactics[:3],
+            )
+
         return {
             "hypotheses_generated": len(hypotheses),
             "hypotheses_viable": len(viable),

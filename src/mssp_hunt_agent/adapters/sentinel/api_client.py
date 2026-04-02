@@ -86,12 +86,18 @@ class SentinelQueryClient:
         self._url = _QUERY_API_URL.format(workspace_id=workspace_id)
         self._client = httpx.Client(timeout=timeout)
 
+    _MAX_RETRIES = 3
+    _RETRY_BACKOFF_BASE = 1.0  # seconds
+
     def query(
         self,
         kql: str,
         timespan: str | None = None,
     ) -> SentinelQueryResponse:
         """Execute a KQL query against the Log Analytics workspace.
+
+        Retries up to 3 times on transient errors (429, 5xx, connection)
+        with exponential backoff.
 
         Parameters
         ----------
@@ -101,6 +107,29 @@ class SentinelQueryClient:
             Optional ISO 8601 duration or interval (e.g. 'P30D', 'PT24H').
             If provided, overrides any time filter in the query.
         """
+        last_exc: Exception | None = None
+
+        for attempt in range(self._MAX_RETRIES + 1):
+            try:
+                return self._query_once(kql, timespan)
+            except SentinelTransientError as exc:
+                last_exc = exc
+                if attempt < self._MAX_RETRIES:
+                    delay = self._RETRY_BACKOFF_BASE * (2 ** attempt)
+                    logger.warning(
+                        "Sentinel transient error (attempt %d/%d), retrying in %.1fs: %s",
+                        attempt + 1, self._MAX_RETRIES + 1, delay, exc,
+                    )
+                    time.sleep(delay)
+
+        raise last_exc  # type: ignore[misc]
+
+    def _query_once(
+        self,
+        kql: str,
+        timespan: str | None = None,
+    ) -> SentinelQueryResponse:
+        """Execute a single KQL query attempt (no retry)."""
         token = self._auth.get_token()
         headers = {
             "Authorization": f"Bearer {token}",
@@ -145,7 +174,7 @@ class SentinelQueryClient:
     def test_connection(self) -> bool:
         """Return True if a minimal query succeeds."""
         try:
-            self.query("union * | take 1", timespan="PT1M")
+            self.query("Heartbeat | take 1", timespan="PT1H")
             return True
         except (SentinelAPIError, SentinelTransientError, SentinelAuthError):
             return False

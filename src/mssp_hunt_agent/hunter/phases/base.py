@@ -6,13 +6,16 @@ import json
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mssp_hunt_agent.adapters.llm.base import LLMAdapter
 from mssp_hunt_agent.agent.tool_defs import AGENT_TOOLS, ToolExecutor
 from mssp_hunt_agent.hunter.budget import BudgetTracker
 from mssp_hunt_agent.hunter.context import ContextManager
 from mssp_hunt_agent.hunter.models.campaign import CampaignState, PhaseResult, CampaignPhase
+
+if TYPE_CHECKING:
+    from mssp_hunt_agent.persistence.progress import ProgressTracker
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +37,18 @@ class PhaseRunner(ABC):
         tool_executor: ToolExecutor,
         budget: BudgetTracker,
         context_manager: ContextManager | None = None,
+        progress: ProgressTracker | None = None,
     ) -> None:
         self.llm = llm
         self.tool_executor = tool_executor
         self.budget = budget
         self.context_manager = context_manager or ContextManager()
+        self._progress = progress
+
+    def _log(self, event: str, **kwargs) -> None:
+        """Fire a progress event if tracker is attached."""
+        if self._progress:
+            self._progress.log(event, **kwargs)
 
     @abstractmethod
     def phase_name(self) -> CampaignPhase:
@@ -161,6 +171,12 @@ class PhaseRunner(ABC):
                 result.status = "success"
                 result.summary = content[:2000]
                 result.artifacts = self.extract_artifacts(content, state)
+                self._log(
+                    "phase_llm_done",
+                    phase=phase.value,
+                    iterations=iteration + 1,
+                    detail=content[:150],
+                )
                 break
 
             # Process tool calls
@@ -199,6 +215,16 @@ class PhaseRunner(ABC):
                     if tool_name == "run_kql_query":
                         result.kql_queries_run += 1
                         self.budget.record_query()
+
+                    # Log progress event for every tool call
+                    self._log(
+                        "tool_executed",
+                        phase=phase.value,
+                        tool=tool_name,
+                        ms=duration_ms,
+                        result_len=len(result_str),
+                        args_preview=str(args)[:150],
+                    )
 
                     # Append tool result (truncate with warning)
                     truncated = result_str[:8000]

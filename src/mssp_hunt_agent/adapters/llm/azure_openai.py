@@ -1,4 +1,4 @@
-"""Azure OpenAI LLM adapter — evidence-grounded reasoning via GPT-4o."""
+"""Azure OpenAI LLM adapter — evidence-grounded reasoning via GPT-5.3-chat."""
 
 from __future__ import annotations
 

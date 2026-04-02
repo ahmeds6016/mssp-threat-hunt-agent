@@ -12,12 +12,15 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from mssp_hunt_agent.adapters.llm.base import LLMAdapter
 from mssp_hunt_agent.agent.tool_defs import ToolExecutor
 from mssp_hunt_agent.config import HuntAgentConfig
 from mssp_hunt_agent.hunter.budget import BudgetExhausted, BudgetTracker
+
+if TYPE_CHECKING:
+    from mssp_hunt_agent.persistence.progress import ProgressTracker
 from mssp_hunt_agent.hunter.context import ContextManager
 from mssp_hunt_agent.hunter.index_builder import IndexBuilder
 from mssp_hunt_agent.hunter.index_store import IndexStore
@@ -62,6 +65,7 @@ class CampaignOrchestrator:
         campaign_config: CampaignConfig,
         index_store: Optional[IndexStore] = None,
         learning_engine: Optional[CampaignLearningEngine] = None,
+        progress: Optional[ProgressTracker] = None,
     ) -> None:
         self._agent_config = agent_config
         self._llm = llm
@@ -70,6 +74,12 @@ class CampaignOrchestrator:
         self._tool_executor = ToolExecutor(agent_config)
         self._learning_engine = learning_engine
         self._learning_context: dict = {}
+        self._progress = progress
+
+    def _log(self, event: str, **kwargs) -> None:
+        """Fire a progress event if tracker is attached."""
+        if self._progress:
+            self._progress.log(event, **kwargs)
 
     def run(self, resume_state: Optional[CampaignState] = None) -> CampaignState:
         """Run the full campaign, or resume from a saved state."""
@@ -85,6 +95,11 @@ class CampaignOrchestrator:
             )
             logger.info("Starting campaign %s for %s", state.campaign_id, state.config.client_name)
 
+        self._log(
+            "campaign_started",
+            detail=f"Client: {state.config.client_name}, focus: {state.config.focus_areas}",
+        )
+
         budget = BudgetTracker(self._campaign_config)
         context_manager = ContextManager()
 
@@ -94,12 +109,14 @@ class CampaignOrchestrator:
             try:
                 self._learning_context = self._learning_engine.get_learning_context(client_id)
                 state.learning_context = self._learning_context
-                if self._learning_context.get("past_campaigns"):
+                past_count = len(self._learning_context.get("past_campaigns", []))
+                lesson_count = len(self._learning_context.get("lessons_learned", []))
+                if past_count:
                     logger.info(
                         "Loaded learning context: %d past campaigns, %d lessons",
-                        len(self._learning_context.get("past_campaigns", [])),
-                        len(self._learning_context.get("lessons_learned", [])),
+                        past_count, lesson_count,
                     )
+                    self._log("learning_loaded", past_campaigns=past_count, lessons=lesson_count)
             except Exception as exc:
                 logger.warning("Failed to load learning context: %s", exc)
 
@@ -111,6 +128,7 @@ class CampaignOrchestrator:
 
                 state.current_phase = phase
                 logger.info("=== Phase: %s ===", phase.value)
+                self._log("phase_started", phase=phase.value)
 
                 # Conclude and deliver must always run — they summarize findings
                 # and generate the report. Only enforce budget on earlier phases.
@@ -120,7 +138,7 @@ class CampaignOrchestrator:
                     except BudgetExhausted as exc:
                         logger.warning("Budget exhausted before %s: %s", phase.value, exc)
                         state.errors.append(f"Budget exhausted before {phase.value}: {exc}")
-                        # Skip to conclude — don't break the loop
+                        self._log("budget_exhausted", phase=phase.value, detail=str(exc))
                         continue
 
                 phase_result = self._run_phase(state, phase, budget, context_manager)
@@ -131,17 +149,34 @@ class CampaignOrchestrator:
                 state.total_tool_calls += phase_result.tool_calls
                 state.total_llm_tokens += phase_result.llm_tokens_used
 
+                self._log(
+                    "phase_completed",
+                    phase=phase.value,
+                    status=phase_result.status,
+                    queries=phase_result.kql_queries_run,
+                    tool_calls=phase_result.tool_calls,
+                    detail=phase_result.summary[:200] if phase_result.summary else "",
+                )
+
                 if phase_result.status == "failed":
                     logger.error("Phase %s failed: %s", phase.value, phase_result.errors)
                     if phase in (CampaignPhase.INDEX_REFRESH, CampaignPhase.HYPOTHESIZE):
-                        # Critical phases — can't continue
                         state.status = "failed"
                         state.errors.extend(phase_result.errors)
+                        self._log("campaign_failed", detail=f"Critical phase {phase.value} failed")
                         break
-                    # Non-critical — continue with what we have
 
                 # Persist state after each phase
                 self._save_state(state)
+
+                # Budget status update
+                self._log(
+                    "budget_update",
+                    queries=f"{state.total_kql_queries}/{self._campaign_config.max_total_queries}",
+                    tokens=f"{state.total_llm_tokens}/{self._campaign_config.max_llm_tokens}",
+                    findings=len(state.findings),
+                    hypotheses=len(state.hypotheses),
+                )
 
             # Campaign complete
             if state.status != "failed":
@@ -149,13 +184,15 @@ class CampaignOrchestrator:
                 state.current_phase = CampaignPhase.COMPLETED
 
         except BudgetExhausted as exc:
-            state.status = "completed"  # partial completion is still a completion
+            state.status = "completed"
             state.errors.append(f"Campaign ended early: {exc}")
             logger.warning("Campaign ended due to budget: %s", exc)
+            self._log("budget_exhausted", detail=str(exc))
         except Exception as exc:
             state.status = "failed"
             state.errors.append(f"Unexpected error: {exc}")
             logger.exception("Campaign %s failed", state.campaign_id)
+            self._log("campaign_failed", detail=str(exc)[:200])
 
         state.completed_at = datetime.now(timezone.utc).isoformat()
         self._save_state(state)
@@ -167,6 +204,15 @@ class CampaignOrchestrator:
                 logger.info("Campaign %s persisted with lessons extracted", state.campaign_id)
             except Exception as exc:
                 logger.warning("Failed to persist campaign lessons: %s", exc)
+
+        self._log(
+            "campaign_completed",
+            status=state.status,
+            findings=len(state.findings),
+            queries=state.total_kql_queries,
+            hypotheses=len(state.hypotheses),
+            duration_min=round(state.duration_minutes, 1),
+        )
 
         logger.info(
             "Campaign %s %s: %d findings, %d queries, %.1f min",
@@ -193,6 +239,7 @@ class CampaignOrchestrator:
                 tool_executor=self._tool_executor,
                 budget=budget,
                 context_manager=context_manager,
+                progress=self._progress,
             )
         elif phase == CampaignPhase.EXECUTE:
             runner = ExecutePhaseRunner(
@@ -200,34 +247,37 @@ class CampaignOrchestrator:
                 tool_executor=self._tool_executor,
                 budget=budget,
                 context_manager=context_manager,
+                progress=self._progress,
             )
         elif phase == CampaignPhase.CONCLUDE:
-            # Conclude gets an unlimited budget — it must always complete
+            # Conclude gets a generous but bounded budget
             conclude_config = CampaignConfig(
                 client_name=state.config.client_name,
-                max_llm_tokens=2_000_000,
-                max_total_queries=9999,
-                max_duration_minutes=120,
+                max_llm_tokens=500_000,
+                max_total_queries=20,
+                max_duration_minutes=10,
             )
             runner = ConcludePhaseRunner(
                 llm=self._llm,
                 tool_executor=self._tool_executor,
                 budget=BudgetTracker(conclude_config),
                 context_manager=context_manager,
+                progress=self._progress,
             )
         elif phase == CampaignPhase.DELIVER:
-            # Deliver gets an unlimited budget — it must always complete
+            # Deliver gets a generous but bounded budget
             deliver_config = CampaignConfig(
                 client_name=state.config.client_name,
-                max_llm_tokens=2_000_000,
-                max_total_queries=9999,
-                max_duration_minutes=120,
+                max_llm_tokens=500_000,
+                max_total_queries=20,
+                max_duration_minutes=10,
             )
             runner = DeliverPhaseRunner(
                 llm=self._llm,
                 tool_executor=self._tool_executor,
                 budget=BudgetTracker(deliver_config),
                 context_manager=context_manager,
+                progress=self._progress,
             )
         else:
             return PhaseResult(phase=phase, status="skipped", summary="Unknown phase")

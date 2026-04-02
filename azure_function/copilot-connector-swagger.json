@@ -79,7 +79,7 @@
       "get": {
         "operationId": "getAskResult",
         "summary": "Get the result of a submitted question",
-        "description": "Poll this endpoint with the request_id from askAgent. Returns status 'processing' while the agent is working, or 'completed' with the full response when done. For simple queries this typically takes 15-45 seconds. If the result contains route='campaign', a deep investigation was started — use getCampaign with the campaign_id to track it.",
+        "description": "Poll this endpoint with the request_id from askAgent. Returns status 'processing' while the agent is working, or 'completed' with the full response when done. For simple queries this typically takes 15-45 seconds. If the result contains route='campaign', a deep investigation was started — use getCampaignProgress with the campaign_id to track live progress.",
         "parameters": [
           {
             "name": "request_id",
@@ -141,24 +141,33 @@
         }
       }
     },
-    "/api/v1/campaigns/{campaign_id}": {
+    "/api/v1/campaigns/{campaign_id}/progress": {
       "get": {
-        "operationId": "getCampaign",
-        "summary": "Get campaign status and progress",
-        "description": "Returns the current status of a campaign including phase progress, hypothesis count, findings count, and any errors. Use this to poll a running campaign until status is 'completed' or 'failed'. Only needed when getAskResult returns route='campaign'.",
+        "operationId": "getCampaignProgress",
+        "summary": "Get live campaign progress feed",
+        "description": "Returns a real-time progress feed for a running or completed campaign. Shows which phase is active, every KQL query executed, every hypothesis being tested, every finding discovered, and budget usage. Use this whenever the user asks about campaign status, progress, what the agent is doing, or wants updates on a CAMP-ID. Returns immediately with the latest state — no waiting required.",
         "parameters": [
           {
             "name": "campaign_id",
             "in": "path",
             "required": true,
             "type": "string",
-            "description": "The campaign ID returned from getAskResult (e.g., CAMP-96ede78f)",
+            "description": "The campaign ID (e.g., CAMP-fd205f86)",
             "x-ms-summary": "Campaign ID"
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "default": 0,
+            "description": "Return only events after this sequence number (0 = all events)",
+            "x-ms-summary": "Since"
           }
         ],
         "responses": {
           "200": {
-            "description": "Campaign status and progress",
+            "description": "Live campaign progress with event timeline",
             "schema": {
               "type": "object",
               "properties": {
@@ -167,45 +176,67 @@
                   "description": "Campaign identifier",
                   "x-ms-summary": "Campaign ID"
                 },
-                "status": {
-                  "type": "string",
-                  "description": "Current status: starting, running, completed, or failed",
-                  "x-ms-summary": "Status"
-                },
-                "client_name": {
-                  "type": "string",
-                  "description": "Client name",
-                  "x-ms-summary": "Client"
-                },
-                "current_phase": {
-                  "type": "string",
-                  "description": "Current campaign phase",
-                  "x-ms-summary": "Phase"
-                },
-                "hypotheses_count": {
+                "total_events": {
                   "type": "integer",
-                  "description": "Number of hypotheses generated",
-                  "x-ms-summary": "Hypotheses"
+                  "description": "Total number of progress events logged so far",
+                  "x-ms-summary": "Total Events"
                 },
-                "findings_count": {
-                  "type": "integer",
-                  "description": "Number of findings discovered",
-                  "x-ms-summary": "Findings"
+                "summary": {
+                  "type": "object",
+                  "description": "Compact status summary of the campaign",
+                  "properties": {
+                    "phase": {
+                      "type": "string",
+                      "description": "Current phase: index_refresh, hypothesize, execute, conclude, deliver, completed, or failed",
+                      "x-ms-summary": "Current Phase"
+                    },
+                    "phases_completed": {
+                      "type": "array",
+                      "items": {"type": "string"},
+                      "description": "List of phases that have finished",
+                      "x-ms-summary": "Phases Completed"
+                    },
+                    "total_queries": {
+                      "type": "integer",
+                      "description": "Number of KQL queries executed so far",
+                      "x-ms-summary": "Queries Run"
+                    },
+                    "total_findings": {
+                      "type": "integer",
+                      "description": "Number of findings discovered so far",
+                      "x-ms-summary": "Findings"
+                    },
+                    "hypotheses": {
+                      "type": "integer",
+                      "description": "Number of hypotheses generated",
+                      "x-ms-summary": "Hypotheses"
+                    },
+                    "last_event": {
+                      "type": "string",
+                      "description": "Type of the most recent event",
+                      "x-ms-summary": "Last Event"
+                    },
+                    "last_detail": {
+                      "type": "string",
+                      "description": "Detail of the most recent event",
+                      "x-ms-summary": "Last Detail"
+                    }
+                  },
+                  "x-ms-summary": "Summary"
                 },
-                "error": {
-                  "type": "string",
-                  "description": "Error message if failed",
-                  "x-ms-summary": "Error"
+                "events": {
+                  "type": "array",
+                  "description": "Timestamped progress events",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "seq": {"type": "integer", "description": "Sequence number"},
+                      "t": {"type": "string", "description": "Timestamp (HH:MM:SS UTC)"},
+                      "event": {"type": "string", "description": "Event type"}
+                    }
+                  },
+                  "x-ms-summary": "Events"
                 }
-              }
-            }
-          },
-          "404": {
-            "description": "Campaign not found",
-            "schema": {
-              "type": "object",
-              "properties": {
-                "error": {"type": "string"}
               }
             }
           }
@@ -306,22 +337,6 @@
                 "version": {
                   "type": "string",
                   "x-ms-summary": "Version"
-                },
-                "adapter_mode": {
-                  "type": "string",
-                  "x-ms-summary": "Adapter Mode"
-                },
-                "llm_enabled": {
-                  "type": "boolean",
-                  "x-ms-summary": "LLM Enabled"
-                },
-                "llm_adapter": {
-                  "type": "string",
-                  "x-ms-summary": "LLM Adapter"
-                },
-                "agent_enabled": {
-                  "type": "boolean",
-                  "x-ms-summary": "Agent Enabled"
                 }
               }
             }

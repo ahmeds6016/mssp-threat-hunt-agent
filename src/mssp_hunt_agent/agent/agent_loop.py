@@ -1,4 +1,4 @@
-"""Agent loop — iterative tool-calling loop driven by GPT-4o."""
+"""Agent loop — iterative tool-calling loop driven by GPT-5.3-chat."""
 
 from __future__ import annotations
 
@@ -52,12 +52,14 @@ class AgentLoop:
         *,
         max_iterations: int | None = None,
         system_prompt: str = "",
+        request_id: str = "",
     ) -> None:
         self.config = config
         self.llm = llm
         self.tool_executor = tool_executor
         self.max_iterations = max_iterations or config.agent_loop_max_iterations
         self.system_prompt = system_prompt
+        self._rid = request_id
 
     def run(self, user_message: str) -> AgentLoopResult:
         """Execute the agent loop for a user message."""
@@ -65,6 +67,10 @@ class AgentLoop:
         tool_calls_made: list[ToolCallRecord] = []
         start_time = time.time()
         timeout = self.config.agent_loop_timeout_seconds
+        rid = self._rid
+
+        if rid:
+            logger.info("[%s] agent_loop start | max_iter=%d timeout=%ds", rid, self.max_iterations, timeout)
 
         # Build initial messages
         messages: list[dict[str, Any]] = []
@@ -104,6 +110,12 @@ class AgentLoop:
 
             # If LLM returned text with no tool calls → done
             if content and not tool_calls:
+                elapsed_ms = int((time.time() - start_time) * 1000)
+                if rid:
+                    logger.info(
+                        "[%s] agent_loop done | %dms | iterations=%d | tools=%d",
+                        rid, elapsed_ms, iteration + 1, len(tool_calls_made),
+                    )
                 steps.append(ReasoningStep(
                     step_type="synthesizing",
                     description="Agent produced final response",
@@ -150,6 +162,12 @@ class AgentLoop:
                         duration_ms=duration_ms,
                     )
                     tool_calls_made.append(record)
+
+                    if rid:
+                        logger.info(
+                            "[%s] tool_call | iter=%d | %s | %dms | result_len=%d",
+                            rid, iteration + 1, tool_name, duration_ms, len(result_str),
+                        )
 
                     steps.append(ReasoningStep(
                         step_type="tool_call",

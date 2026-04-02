@@ -412,14 +412,28 @@ For each finding:
 - Suggested next hunt topics
 - Timeline recommendations
 
-## Formatting
-- Use Markdown formatting
-- Use severity badges: 🔴 Critical, 🟠 High, 🟡 Medium, 🔵 Low, ⚪ Info
-- Include KQL code blocks where relevant
-- Be concise but thorough
-- Write for a professional MSSP audience
+## Formatting Requirements
+- Use Markdown formatting optimized for Microsoft Teams rendering
+- Use bold headers with ## and ### for clear section hierarchy
+- Severity indicators: **CRITICAL**, **HIGH**, **MEDIUM**, **LOW**, **INFORMATIONAL**
+- Wrap KQL queries in triple-backtick code blocks with kql language tag
+- Use bullet points for lists, bold for key terms
+- Use horizontal rules (---) between major sections
+- Tables where appropriate for structured data (findings summary, coverage matrix)
+- Keep paragraphs concise — 2-3 sentences maximum
+- Write in formal technical language appropriate for security operations leadership
+- Do not use emojis or informal language
+- Each finding should be clearly numbered and separated
+- Include a risk score or severity rating for each finding
+- End each finding with a specific, actionable recommendation
 
-Produce the full report in Markdown format.
+## Report Tone
+- Professional MSSP deliverable quality
+- Evidence-based — every claim backed by KQL results or data
+- Direct and precise — no filler, no hedging
+- Suitable for inclusion in a client-facing security report
+
+Produce the complete report in Markdown format.
 """
 
 

@@ -47,6 +47,8 @@ class HuntAgentConfig(BaseModel):
     # Persistence
     persist: bool = False
     db_path: Path = Path(".hunt_agent.db")
+    blob_connection_string: str = ""  # Azure Blob Storage for durable state
+    blob_container_name: str = "agent-state"
 
     # API
     api_enabled: bool = False
@@ -159,6 +161,8 @@ class HuntAgentConfig(BaseModel):
             api_enabled=os.getenv("HUNT_API_ENABLED", "false").lower() == "true",
             persist=os.getenv("HUNT_PERSIST", "false").lower() == "true",
             db_path=Path(os.getenv("HUNT_DB_PATH", ".hunt_agent.db")),
+            blob_connection_string=os.getenv("BLOB_CONNECTION_STRING", ""),
+            blob_container_name=os.getenv("BLOB_CONTAINER_NAME", "agent-state"),
             # LLM
             llm_enabled=os.getenv("HUNT_LLM_ENABLED", "false").lower() == "true",
             azure_openai_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
