@@ -50,6 +50,12 @@ class HuntAgentConfig(BaseModel):
     blob_connection_string: str = ""  # Azure Blob Storage for durable state
     blob_container_name: str = "agent-state"
 
+    # Intel scan
+    intel_sender_email: str = ""  # Email address for sending intel reports
+    intel_recipients: list[str] = []  # Default recipients for intel reports
+    intel_relevance_threshold: float = 0.6  # Minimum relevance score to trigger hunt
+    intel_context: str = ""  # Injected by intel campaign launcher (runtime only)
+
     # API
     api_enabled: bool = False
 
@@ -163,6 +169,9 @@ class HuntAgentConfig(BaseModel):
             db_path=Path(os.getenv("HUNT_DB_PATH", ".hunt_agent.db")),
             blob_connection_string=os.getenv("BLOB_CONNECTION_STRING", ""),
             blob_container_name=os.getenv("BLOB_CONTAINER_NAME", "agent-state"),
+            intel_sender_email=os.getenv("INTEL_SENDER_EMAIL", ""),
+            intel_recipients=[r.strip() for r in os.getenv("INTEL_RECIPIENTS", "").split(",") if r.strip()],
+            intel_relevance_threshold=float(os.getenv("INTEL_RELEVANCE_THRESHOLD", "0.6")),
             # LLM
             llm_enabled=os.getenv("HUNT_LLM_ENABLED", "false").lower() == "true",
             azure_openai_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),

@@ -775,6 +775,340 @@ def get_campaign_progress(req: func.HttpRequest) -> func.HttpResponse:
 
 
 
+# ── Intel Scan Endpoints ──────────────────────────────────────────────
+
+
+@app.function_name("IntelScan")
+@app.route(route="api/v1/intel-scan", methods=["POST"])
+def intel_scan(req: func.HttpRequest) -> func.HttpResponse:
+    """Trigger a threat intel scan — checks feeds, correlates, hunts, and reports.
+
+    Body (all optional):
+    {
+        "recipients": ["analyst@company.com"],
+        "relevance_threshold": 0.6,
+        "dry_run": false
+    }
+    """
+    import uuid as _uuid_mod
+    scan_id = f"SCAN-{_uuid_mod.uuid4().hex[:8]}"
+
+    try:
+        body = req.get_json()
+    except ValueError:
+        body = {}
+
+    recipients = body.get("recipients", [])
+    threshold = body.get("relevance_threshold", 0.6)
+    dry_run = body.get("dry_run", False)
+
+    logger.info("[%s] Intel scan triggered | recipients=%s threshold=%.1f dry_run=%s",
+                scan_id, recipients, threshold, dry_run)
+
+    # Run in background thread
+    def _run_scan():
+        try:
+            from mssp_hunt_agent.intel.intel_pipeline import IntelPipeline
+            from mssp_hunt_agent.persistence.email_delivery import EmailSender
+
+            config = _get_config()
+            config.agent_enabled = True
+            config.agent_llm_fallback = False
+
+            from mssp_hunt_agent.agent.controller import AgentController
+            ctrl = AgentController(config=config)
+            if not ctrl.llm:
+                logger.error("[%s] LLM not available for intel scan", scan_id)
+                return
+
+            store = _get_state_store()
+
+            # Build email sender if credentials are configured
+            email_sender = None
+            if (recipients and config.azure_tenant_id and config.azure_client_id
+                    and config.azure_client_secret):
+                sender_email = os.getenv("INTEL_SENDER_EMAIL", "")
+                if sender_email:
+                    email_sender = EmailSender(
+                        tenant_id=config.azure_tenant_id,
+                        client_id=config.azure_client_id,
+                        client_secret=config.azure_client_secret,
+                        sender_email=sender_email,
+                    )
+
+            pipeline = IntelPipeline(
+                config=config, llm=ctrl.llm,
+                blob_store=store, email_sender=email_sender,
+            )
+            result = pipeline.run_scan(
+                recipients=recipients if email_sender else None,
+                relevance_threshold=threshold,
+                dry_run=dry_run,
+            )
+
+            # Store result for retrieval
+            with _state_lock:
+                store.save_request(scan_id, {
+                    "scan_id": scan_id,
+                    "status": "completed",
+                    **result.to_dict(),
+                })
+
+            logger.info("[%s] Intel scan complete: %d articles, %d hunts, %d findings",
+                        scan_id, result.articles_found, result.hunts_completed, result.total_findings)
+
+        except Exception as exc:
+            logger.exception("[%s] Intel scan failed", scan_id)
+            store = _get_state_store()
+            with _state_lock:
+                store.save_request(scan_id, {
+                    "scan_id": scan_id,
+                    "status": "error",
+                    "error": "Intel scan failed. Check server logs.",
+                })
+
+    thread = threading.Thread(target=_run_scan, daemon=True)
+    thread.start()
+
+    return _json_response({
+        "scan_id": scan_id,
+        "status": "running",
+        "message": f"Intel scan started. Poll GET /api/v1/intel-scan/{scan_id} for results.",
+    }, 202)
+
+
+@app.function_name("IntelHuntURL")
+@app.route(route="api/v1/intel-hunt", methods=["POST"])
+def intel_hunt_url(req: func.HttpRequest) -> func.HttpResponse:
+    """Targeted intel hunt — provide a URL or report text, agent reads it, hunts, and reports.
+
+    Body:
+    {
+        "url": "https://blog.google/threat-analysis-group/...",   // OR
+        "text": "On March 31, North Korea-nexus actor...",
+        "title": "Optional title override",
+        "recipients": ["analyst@company.com"]
+    }
+    """
+    import uuid as _uuid_mod
+    hunt_id = f"INTEL-{_uuid_mod.uuid4().hex[:8]}"
+
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _json_response({"error": "Invalid JSON body"}, 400)
+
+    url = body.get("url", "")
+    text = body.get("text", "")
+    title = body.get("title", "")
+    recipients = body.get("recipients", [])
+
+    if not url and not text:
+        return _json_response({"error": "Provide either 'url' or 'text' field"}, 400)
+
+    logger.info("[%s] Targeted intel hunt | url=%s | text_len=%d", hunt_id, url[:80] if url else "", len(text))
+
+    def _run_targeted_hunt():
+        store = _get_state_store()  # Initialize first so error handling always works
+        try:
+            from mssp_hunt_agent.intel.executive_report import ExecutiveReportBuilder
+            from mssp_hunt_agent.intel.feed_monitor import ThreatArticle, fetch_article_text, _make_article_id
+            from mssp_hunt_agent.intel.intel_campaign import IntelCampaignLauncher
+            from mssp_hunt_agent.intel.intel_processor import IntelEvent, IntelProcessor
+            from mssp_hunt_agent.persistence.email_delivery import EmailSender
+            from mssp_hunt_agent.persistence.progress import ProgressTracker
+
+            with _state_lock:
+                store.save_request(hunt_id, {"hunt_id": hunt_id, "status": "initializing"})
+
+            config = _get_config()
+            config.agent_enabled = True
+            config.agent_llm_fallback = False
+
+            from mssp_hunt_agent.agent.controller import AgentController
+            ctrl = AgentController(config=config)
+            if not ctrl.llm:
+                with _state_lock:
+                    store.save_request(hunt_id, {"hunt_id": hunt_id, "status": "error", "error": "LLM not available"})
+                return
+
+            # Step 1: Get article content
+            if url:
+                article_text = fetch_article_text(url)
+                article_title = title or url.split("/")[-1].replace("-", " ").title()
+            else:
+                article_text = text
+                article_title = title or text[:100]
+
+            logger.info("[%s] Article fetched: %d chars", hunt_id, len(article_text))
+
+            # Step 2: Create article and process through intel pipeline
+            article_dict = {
+                "article_id": _make_article_id(url or article_title),
+                "title": article_title,
+                "url": url,
+                "published": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                "source": "Manual Submission",
+                "category": "targeted",
+                "summary": article_text[:2000],
+                "full_text": article_text,
+                "tags": [],
+            }
+
+            # Step 3: Extract intel using GPT-5.3
+            processor = IntelProcessor(llm=ctrl.llm)
+
+            # Create a single-article event directly (skip correlation for targeted hunts)
+            event = IntelEvent(
+                event_id=hunt_id,
+                title=article_title,
+                severity="high",  # Assume high — analyst explicitly requested this
+                category="targeted",
+                summary=article_text[:1000],
+                articles=[article_dict],
+                article_count=1,
+                sources=["Manual Submission"],
+                relevance_score=1.0,  # Explicitly requested = always relevant
+            )
+
+            # Extract IOCs, TTPs, CVEs
+            enriched = processor.extract_intel([event], min_relevance=0.0)
+            event = enriched[0]
+
+            logger.info("[%s] Extracted: %d IOCs, %d techniques, actor=%s",
+                        hunt_id, len(event.iocs), len(event.mitre_techniques), event.threat_actor)
+
+            with _state_lock:
+                store.save_request(hunt_id, {
+                    "hunt_id": hunt_id,
+                    "status": "extracting",
+                    "title": event.title,
+                    "iocs": len(event.iocs),
+                    "techniques": event.mitre_techniques,
+                    "threat_actor": event.threat_actor,
+                })
+
+            # Step 4: Launch targeted hunt campaign
+            progress = _create_progress_tracker(hunt_id)
+            launcher = IntelCampaignLauncher(agent_config=config, llm=ctrl.llm)
+            campaign_state = launcher.launch_hunt(event, progress=progress)
+
+            # Step 5: Build executive report
+            report_builder = ExecutiveReportBuilder()
+            timeline = "\n".join(f"[{e.get('t', '')}] {e.get('event', '')}" for e in progress.get_all()[-20:])
+            report = report_builder.build_report(event, campaign_state, hunt_timeline=timeline)
+            markdown = report_builder.to_markdown(report)
+            html = report_builder.to_html(report)
+
+            # Persist report
+            store._upload_json(f"intel-reports/{report.report_id}.json", report.to_dict())
+            store.save_campaign(campaign_state.campaign_id, campaign_state)
+
+            # Step 6: Send email if recipients configured
+            emails_sent = 0
+            if recipients and config.azure_tenant_id and config.azure_client_id:
+                sender_email = os.getenv("INTEL_SENDER_EMAIL", "")
+                if sender_email:
+                    try:
+                        email_sender = EmailSender(
+                            tenant_id=config.azure_tenant_id,
+                            client_id=config.azure_client_id,
+                            client_secret=config.azure_client_secret,
+                            sender_email=sender_email,
+                        )
+                        if email_sender.send_intel_report(to=recipients, report=report, html_body=html):
+                            emails_sent = 1
+                    except Exception as exc:
+                        logger.warning("[%s] Email delivery failed: %s", hunt_id, exc)
+
+            # Save final result
+            with _state_lock:
+                store.save_request(hunt_id, {
+                    "hunt_id": hunt_id,
+                    "status": "completed",
+                    "report_id": report.report_id,
+                    "campaign_id": report.campaign_id,
+                    "verdict": report.verdict,
+                    "risk_level": report.risk_level,
+                    "verdict_summary": report.verdict_summary,
+                    "findings": report.hunt_findings_count,
+                    "queries": report.hunt_queries_count,
+                    "techniques": event.mitre_techniques,
+                    "threat_actor": event.threat_actor,
+                    "iocs_analyzed": len(event.iocs),
+                    "emails_sent": emails_sent,
+                    "report_markdown": markdown,
+                })
+
+            logger.info("[%s] Targeted intel hunt complete: %s, %d findings",
+                        hunt_id, report.verdict, report.hunt_findings_count)
+
+        except Exception as exc:
+            logger.exception("[%s] Targeted intel hunt failed: %s", hunt_id, exc)
+            try:
+                with _state_lock:
+                    store.save_request(hunt_id, {
+                        "hunt_id": hunt_id,
+                        "status": "error",
+                        "error": f"Intel hunt failed: {type(exc).__name__}. Check server logs.",
+                    })
+            except Exception:
+                logger.exception("[%s] Failed to save error state", hunt_id)
+
+    thread = threading.Thread(target=_run_targeted_hunt, daemon=True)
+    thread.start()
+
+    return _json_response({
+        "hunt_id": hunt_id,
+        "status": "running",
+        "message": f"Targeted intel hunt started. Poll GET /api/v1/intel-scan/{hunt_id} for results.",
+    }, 202)
+
+
+@app.function_name("GetIntelScanResult")
+@app.route(route="api/v1/intel-scan/{scan_id}", methods=["GET"])
+def get_intel_scan_result(req: func.HttpRequest) -> func.HttpResponse:
+    """Poll for intel scan results."""
+    scan_id = req.route_params.get("scan_id", "")
+    store = _get_state_store()
+    with _state_lock:
+        entry = store.get_request(scan_id)
+    if not entry:
+        return _json_response({"error": f"Scan {scan_id} not found"}, 404)
+    return _json_response(entry)
+
+
+@app.function_name("GetIntelReports")
+@app.route(route="api/v1/intel-reports", methods=["GET"])
+def get_intel_reports(req: func.HttpRequest) -> func.HttpResponse:
+    """List recent intel assessment reports."""
+    store = _get_state_store()
+    if not store.blob_enabled:
+        return _json_response({"reports": [], "message": "Blob storage not configured"})
+
+    try:
+        container = store._client.get_container_client(store._container_name)
+        reports = []
+        for blob in container.list_blobs(name_starts_with="intel-reports/RPT-"):
+            if blob.name.endswith(".json"):
+                data = store._download_json(blob.name)
+                if data:
+                    reports.append({
+                        "report_id": data.get("report_id", ""),
+                        "generated_at": data.get("generated_at", ""),
+                        "intel_event_title": data.get("intel_event_title", ""),
+                        "verdict": data.get("verdict", ""),
+                        "risk_level": data.get("risk_level", ""),
+                        "hunt_findings_count": data.get("hunt_findings_count", 0),
+                        "campaign_id": data.get("campaign_id", ""),
+                    })
+        reports.sort(key=lambda r: r.get("generated_at", ""), reverse=True)
+        return _json_response({"reports": reports[:50]})
+    except Exception as exc:
+        logger.warning("Failed to list intel reports: %s", exc)
+        return _json_response({"reports": [], "error": str(exc)})
+
+
 @app.function_name("OpenAPISpec")
 @app.route(route="api/openapi.json", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def openapi_spec(req: func.HttpRequest) -> func.HttpResponse:

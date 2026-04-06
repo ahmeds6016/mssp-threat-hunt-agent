@@ -9,11 +9,11 @@ from mssp_hunt_agent.agent.models import AgentIntent, AgentResponse
 
 
 def format_response(response: AgentResponse) -> str:
-    """Format an AgentResponse into clean, readable text for Copilot Studio."""
+    """Format an AgentResponse for Copilot Studio / Teams (markdown preserved)."""
     parts: list[str] = []
 
-    # Main summary (strip markdown for plain-text channels)
-    parts.append(_strip_markdown(response.summary))
+    # Preserve markdown — Teams and Copilot Studio render it properly
+    parts.append(response.summary)
 
     # Add structured details for certain intents
     formatter = _FORMATTERS.get(response.intent)

@@ -1,335 +1,362 @@
-"""Live evaluation runner — submits prompts to the live endpoint and grades responses."""
+"""Live evaluation runner - submits test prompts to deployed agent and grades responses.
 
+Usage:
+    python tests/run_live_eval.py
+    python tests/run_live_eval.py --batch-size 5 --max-questions 10
+    python tests/run_live_eval.py --csv tests/eval_quick_functional.csv
+"""
+from __future__ import annotations
+
+import argparse
+import csv
 import json
+import os
 import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
-import requests
+import httpx
 
-BASE = "https://mssphuntagent-fn.azurewebsites.net/api/v1"
-KEY = "qvMa0mwbfz3itHZMO20kbkWfpAr-oY9_1WHmJpFeK2EmAzFuK-xiGQ=="
+BASE_URL = "https://mssphuntagent-fn.azurewebsites.net"
+FK = "qvMa0mwbfz3itHZMO20kbkWfpAr-oY9_1WHmJpFeK2EmAzFuK-xiGQ=="
+ASK_URL = f"{BASE_URL}/api/v1/ask?code={FK}"
+POLL_TPL = BASE_URL + "/api/v1/ask/{rid}?code=" + FK
+MAX_POLL = 180
+POLL_INT = 10
 
-CHAT_PROMPTS = [
-    # CVE lookups (5)
-    "Are we vulnerable to CVE-2024-3400",
-    "Are we vulnerable to CVE-2026-21262",
-    "Look up CVE-2024-21887 and check if we are exposed",
-    "Are we exposed to Log4Shell CVE-2021-44228",
-    "What is the latest CVE affecting Microsoft Exchange",
-    # Sign-in queries (10)
-    "List all users who signed in the past 24 hours",
-    "Any failed sign-ins in the last 24 hours",
-    "Show me sign-in activity for ahmed.shiekhaden today",
-    "Who has the most sign-ins in the last 7 days",
-    "Any sign-ins from outside the US or India",
-    "Any risky sign-ins flagged by Azure AD",
-    "Show me all failed sign-ins with ResultType 50126",
-    "Review sign-in patterns for ahmed.shiekhaden for the past month",
-    "Any impossible travel detected in sign-in logs",
-    "Which users are signing in from the most unique IP addresses",
-    # Identity / MFA (5)
-    "Is MFA enabled for all admin accounts",
-    "Which admin accounts signed in without MFA this week",
-    "How many users have Global Admin role",
-    "Any new user accounts created in the last 7 days",
-    "Any role assignments changed this week",
-    # MITRE knowledge + coverage (7)
-    "What MITRE techniques cover lateral movement",
-    "What MITRE techniques cover credential access",
-    "Explain T1003 OS Credential Dumping and our detection coverage",
-    "What is T1059 and do we have detection for it",
-    "Map T1078 Valid Accounts to our telemetry",
-    "What techniques does APT29 use and are we covered",
-    "What MITRE techniques cover initial access",
-    # Detection rules (11)
-    "Write a KQL detection rule for brute force attacks",
-    "Create a detection rule for DCSync attacks",
-    "Write a detection rule for password spraying",
-    "Create a rule to detect suspicious PowerShell execution",
-    "Write a KQL rule for detecting scheduled task persistence",
-    "Build a detection for lateral movement via SMB",
-    "Create a KQL rule for detecting new service installation",
-    "Write a KQL detection rule for impossible travel",
-    "Build a Sentinel KQL detection rule for LSASS credential dumping T1003",
-    "Create a KQL rule to detect Kerberoasting activity",
-    "Write a detection rule for Azure AD conditional access policy changes",
-    # Active hunts (10)
-    "Check for brute force attempts in the last 7 days",
-    "Hunt for lateral movement in the last 7 days",
-    "Check for privilege escalation attempts",
-    "Any suspicious PowerShell activity",
-    "Hunt for persistence mechanisms in the last 7 days",
-    "Any indicators of ransomware activity",
-    "Hunt for defense evasion techniques",
-    "Check for Kerberoasting activity",
-    "Search for DCSync activity in all data sources",
-    "Check for data exfiltration indicators",
-    # AttackSimulation_CL (10)
-    "Hunt for UAC bypass or privilege escalation in our attack simulation data",
-    "What attack scenarios exist in our AttackSimulation_CL table",
-    "Search AttackSimulation_CL for T1003 credential dumping events",
-    "How many attack simulation events do we have by MITRE tactic",
-    "What lateral movement techniques are in our simulation data",
-    "Show me all persistence techniques in AttackSimulation_CL",
-    "What defense evasion scenarios do we have in simulation data",
-    "Compare credential dumping activity in simulation data against real telemetry",
-    "Are there any signs of credential dumping tools like mimikatz in our environment",
-    "Hunt for all T1003 variants across both real and simulation data",
-    # Telemetry / operational (6)
-    "What log sources are we ingesting into Sentinel",
-    "What data sources do we have for detecting credential theft",
-    "How many events are we ingesting per day",
-    "What tables have data in the last 7 days",
-    "Is our Syslog connector healthy",
-    "What devices are reporting to Defender for Endpoint",
-    # Risk assessment (7)
-    "How exposed are we to pass-the-hash attacks",
-    "What if we lose our EDR coverage",
-    "What is our risk if an admin account is compromised",
-    "Assess our ransomware readiness",
-    "Identify attack paths from a compromised user account",
-    "What attack paths exist if our domain controller is compromised",
-    "How would an attacker move laterally in our environment",
-    # Real-world scenarios (8)
-    "Stryker suffered a cyberattack where 200k devices were wiped. Do we have detection rules for mass deletion",
-    "We just received a phishing report from an employee. What do I check",
-    "An alert fired on DESKTOP-ABC123 for suspicious PowerShell. What do I do",
-    "Our CEO account may be compromised. Walk me through the investigation",
-    "A zero-day RCE in our VPN was just announced with no patch. What should we do",
-    "We detected a potential C2 beacon. How do we investigate",
-    "What is the current threat landscape for healthcare",
-    "What are the top threats facing financial services",
-    # Operational queries (9)
-    "Any Azure resource changes in the last 24 hours",
-    "Check for any conditional access policy changes",
-    "Check for any suspicious app registrations in Azure AD",
-    "Any Linux servers showing suspicious activity",
-    "What Office 365 activity looks suspicious",
-    "How many incidents do we have open in Sentinel",
-    "What are the top 5 most common alert types this week",
-    "Check for DNS tunneling indicators",
-    "Give me a ransomware response playbook",
-    # Health / meta (2)
-    "Health check",
-    "Are you connected to Sentinel",
+
+@dataclass
+class Grade:
+    evidence_grounded: bool = False
+    actionable: bool = False
+    correct_routing: bool = False
+    complete: bool = False
+    professional: bool = False
+    notes: list = field(default_factory=list)
+
+    @property
+    def score(self):
+        return sum([
+            self.evidence_grounded, self.actionable,
+            self.correct_routing, self.complete, self.professional,
+        ])
+
+
+@dataclass
+class EvalResult:
+    question: str
+    expected: str
+    response: str = ""
+    route: str = ""
+    status: str = ""
+    request_id: str = ""
+    elapsed_s: float = 0.0
+    error: str = ""
+    grade: Grade = field(default_factory=Grade)
+
+
+EV_KW = [
+    "SecurityEvent", "SigninLogs", "DeviceProcessEvents", "Syslog",
+    "AttackSimulation_CL", "EventID", "TimeGenerated", "KQL",
+    "| where", "| summarize", "| take", "| count", "| project",
+    "events", "results", "queries", "0 events", "T1003", "T1021",
+    "T1053", "T1059", "T1110", "T1218", "T1547", "T1558", "CVE-",
+    "ago(", "count()", "dcount(",
 ]
-
-CAMPAIGN_PROMPTS = [
-    "Run a comprehensive threat hunt across credential theft lateral movement persistence and privilege escalation",
-    "Do a comprehensive security posture review of our environment",
-    "What threats are we missing in our environment",
-    "Hunt for signs of business email compromise data exfiltration and insider threats across all data sources",
-    "Do a deep dive into ransomware readiness defense evasion and command and control beaconing",
-    "Run a full threat hunt across all attack vectors in our environment",
-    "Comprehensive investigation into credential abuse privilege escalation and persistence mechanisms",
-    "Hunt for advanced persistent threat activity across identity endpoint and network telemetry",
-    "Assess our full MITRE ATT&CK coverage gaps and hunt for threats in uncovered areas",
-    "Run a full security audit covering authentication anomalies lateral movement data exfiltration and insider threats",
-    "Run a comprehensive threat hunt using both real telemetry and AttackSimulation_CL data to validate detection coverage",
-    "Do a full assessment of ransomware kill chain coverage using our attack simulation baselines",
-    "Comprehensive hunt for persistence and defense evasion across production logs and Mordor simulation data",
-    "Run a full gap analysis comparing our Sentinel detections against the attack scenarios in AttackSimulation_CL",
-    "Hunt for APT29 TTPs across all data sources including credential access lateral movement and data staging",
-    "We suspect a breach occurred 2 weeks ago. Run a comprehensive investigation across all attack stages",
-    "Run a comprehensive insider threat investigation across data exfiltration unusual access patterns and privilege abuse",
-    "Full investigation into potential cloud compromise. Check Azure AD sign-ins conditional access bypasses and resource modifications",
-    "Run a full threat hunt and produce an executive summary suitable for presenting to our CISO",
-    "Hunt for all known attack techniques across every data source we have with maximum coverage",
+AC_KW = [
+    "| where", "| summarize", "| take", "| project", "KQL",
+    "detection rule", "analytic rule", "recommend", "next steps",
+    "deploy", "enable", "configure", "investigate", "block",
+    "monitor", "alert", "DeviceProcessEvents", "SecurityEvent", "SigninLogs",
+]
+FILLER = [
+    "great question", "happy to help", "glad you asked",
+    "sure thing", "no problem", "let me help you with that",
+]
+CAMP_Q = [
+    "hunt for lateral movement and credential access",
+    "run a comprehensive assessment across all mitre tactics",
+    "trace complete attack chains",
+    "hunt for credential theft to lateral movement",
+    "conduct a full spectrum threat assessment",
+    "hunt for defense evasion and privilege escalation techniques across",
+    "hunt for all persistence techniques",
+    "hunt for advanced persistent threat activity",
+    "hunt for all credential access techniques",
+    "hunt for the full kill chain",
+    "hunt for supply chain attack indicators",
+    "hunt for insider threat indicators",
+]
+GREET_Q = [
+    "hi", "hello, what can you do?", "thanks for the help",
+    "can you help me with something unrelated to security?",
+    "what version are you running?",
 ]
 
 
-def submit(prompt):
-    try:
-        r = requests.post(f"{BASE}/ask?code={KEY}", json={"message": prompt}, timeout=15)
-        return r.json().get("request_id", "FAIL")
-    except Exception as e:
-        return f"FAIL:{e}"
+def is_camp(q):
+    return any(k in q.lower() for k in CAMP_Q)
 
 
-def poll(req_id):
-    try:
-        r = requests.get(f"{BASE}/ask/{req_id}?code={KEY}", timeout=15)
-        return r.json()
-    except Exception:
-        return {"status": "error"}
+def is_greet(q):
+    return q.lower().strip() in GREET_Q
 
 
-def grade(d, expected_route):
-    resp = d.get("response", "") or ""
-    route = d.get("route", "?")
-    status = d.get("status", "?")
-    camp = d.get("campaign_id", "")
+def grade_response(r):
+    g = Grade()
+    resp = r.response.lower()
+    ev = sum(1 for k in EV_KW if k.lower() in resp)
+    ac = sum(1 for k in AC_KW if k.lower() in resp)
 
-    # Routing
-    route_pass = route == expected_route
-
-    # Evidence grounded
-    tables = any(t in resp for t in [
-        "SecurityEvent", "SigninLogs", "DeviceProcessEvents", "AttackSimulation",
-        "AuditLogs", "Syslog", "CommonSecurityLog", "OfficeActivity", "AzureActivity",
-    ])
-    evidence = any(e in resp for e in [
-        "0 events", "event", "count", "sign-in", "query", "queried",
-        "checked", "Result", "found", "detected", "returned",
-    ])
-    if tables and evidence:
-        grounding = "grounded"
-    elif evidence:
-        grounding = "partial"
+    # Evidence-Grounded
+    if is_greet(r.question):
+        g.evidence_grounded = True
+        g.actionable = True
+        g.notes.append("Greeting")
     else:
-        grounding = "ungrounded"
+        if ev >= 3:
+            g.evidence_grounded = True
+        else:
+            g.notes.append(f"Low evidence ({ev})")
+        if ac >= 2:
+            g.actionable = True
+        else:
+            g.notes.append(f"Low actionability ({ac})")
 
-    # Campaign launches are exempt from grounding
-    if expected_route == "campaign" and route == "campaign":
-        grounding = "exempt"
+    # Correct Routing
+    if is_greet(r.question):
+        g.correct_routing = True
+    elif is_camp(r.question):
+        if r.route == "campaign" or "camp-" in resp or "campaign" in resp:
+            g.correct_routing = True
+        else:
+            g.notes.append(f"Expected campaign, got {r.route}")
+    else:
+        if r.route in ("chat", "") or r.status == "completed":
+            g.correct_routing = True
+        else:
+            g.notes.append(f"Expected chat, got {r.route}")
 
-    # Actionable
-    actionable = any(a in resp for a in [
-        "recommend", "next step", "deploy", "create", "enable",
-        "investigate", "should", "rule", "detection", "action",
-        "remediat", "mitigat", "CAMP-", "campaign",
-    ])
+    # Completeness
+    if is_greet(r.question):
+        g.complete = bool(r.response.strip())
+    elif r.error:
+        g.notes.append(f"Error: {r.error[:80]}")
+    elif len(r.response) < 50:
+        g.notes.append(f"Too short ({len(r.response)})")
+    else:
+        ew = [w.lower() for w in r.expected.split() if len(w) > 4]
+        mp = sum(1 for w in ew if w in resp) / max(len(ew), 1)
+        if mp >= 0.2 or len(r.response) > 200:
+            g.complete = True
+        else:
+            g.notes.append(f"Low keyword match ({mp:.0%})")
 
-    # AttackSimulation awareness
-    sim_aware = "AttackSimulation" in resp or "simulation" in resp.lower() or "Mordor" in resp
+    # Professional Tone
+    fl = sum(1 for p in FILLER if p in resp)
+    if fl == 0:
+        g.professional = True
+    else:
+        g.notes.append(f"Filler ({fl})")
 
-    # KQL quality
-    has_kql = "where" in resp and (
-        "EventID" in resp or "TimeGenerated" in resp or
-        "summarize" in resp or "SigninLogs" in resp
-    )
-
-    # MITRE accuracy (check for valid technique IDs)
-    import re
-    mitre_ids = re.findall(r"T\d{4}(?:\.\d{3})?", resp)
-    has_mitre = len(mitre_ids) > 0
-
-    # Completeness (response length as proxy — short responses may be incomplete)
-    complete = len(resp) > 200 or (expected_route == "campaign" and camp)
-
-    return {
-        "status": status,
-        "route": route,
-        "route_pass": route_pass,
-        "grounding": grounding,
-        "actionable": actionable,
-        "sim_aware": sim_aware,
-        "has_kql": has_kql,
-        "has_mitre": has_mitre,
-        "complete": complete,
-        "resp_len": len(resp),
-        "campaign_id": camp,
-    }
+    return g
 
 
-def run_eval(prompts, expected_route, label):
-    print(f"\n{'='*60}")
-    print(f"  EVAL {label}: {len(prompts)} prompts (expected: {expected_route})")
-    print(f"{'='*60}")
+def submit(cl, q):
+    r = cl.post(ASK_URL, json={"message": q}, timeout=30)
+    return r.json().get("request_id", "")
 
-    # Submit all
-    req_ids = []
-    for i, p in enumerate(prompts):
-        rid = submit(p)
-        req_ids.append(rid)
-        if (i + 1) % 10 == 0:
-            print(f"  Submitted {i+1}/{len(prompts)}...")
 
-    # Wait
-    wait = 120 if expected_route == "chat" else 30
-    print(f"  Waiting {wait}s for responses...")
-    time.sleep(wait)
+def poll(cl, rid):
+    url = POLL_TPL.format(rid=rid)
+    t0 = time.time()
+    while time.time() - t0 < MAX_POLL:
+        time.sleep(POLL_INT)
+        r = cl.get(url, timeout=30)
+        d = r.json()
+        if d.get("status") != "processing":
+            return d
+    return {"status": "timeout", "error": "Polling timed out"}
 
-    # Poll
+
+def run_one(cl, q, exp):
+    r = EvalResult(question=q, expected=exp)
+    t0 = time.time()
+    try:
+        rid = submit(cl, q)
+        r.request_id = rid
+        if not rid:
+            r.error = "No request_id"
+            r.elapsed_s = time.time() - t0
+            return r
+        d = poll(cl, rid)
+        r.status = d.get("status", "")
+        r.route = d.get("route", "")
+        r.response = d.get("response", "")
+        r.error = d.get("error", "")
+        if r.route == "campaign":
+            cid = d.get("campaign_id", "")
+            if cid:
+                r.response = f"Campaign {cid} launched. {r.response}"
+    except Exception as e:
+        r.error = str(e)
+    r.elapsed_s = time.time() - t0
+    return r
+
+
+def load_csv(p):
+    qs = []
+    with open(p, "r", encoding="utf-8-sig") as f:
+        for row in csv.reader(f):
+            if not row or row[0].startswith("#"):
+                continue
+            if len(row) >= 2 and row[0] != "question":
+                qs.append((row[0].strip(), row[1].strip()))
+    return qs
+
+
+def run_eval(csv_path, batch_size=10, max_q=0, out_dir="tests/eval_results"):
+    qs = load_csv(csv_path)
+    if max_q > 0:
+        qs = qs[:max_q]
+    total = len(qs)
+    sep = "=" * 70
+    print(f"\n{sep}")
+    print("MSSP Threat Hunt Agent - Live Evaluation")
+    print(sep)
+    print(f"Questions: {total} | Batch: {batch_size} | Endpoint: {BASE_URL}")
+    print(f"Started: {datetime.now(timezone.utc).isoformat()}\n")
+
+    cl = httpx.Client()
     results = []
-    for i, rid in enumerate(req_ids):
-        d = poll(rid)
-        if d.get("status") == "processing":
-            time.sleep(30)
-            d = poll(rid)
-        if d.get("status") == "processing":
-            time.sleep(30)
-            d = poll(rid)
-        g = grade(d, expected_route)
-        g["i"] = i + 1
-        g["prompt"] = prompts[i][:70]
-        results.append(g)
 
-    # Score
-    total = len(results)
-    completed = sum(1 for r in results if r["status"] == "completed")
-    errors = total - completed
-    route_pass = sum(1 for r in results if r["route_pass"])
-    grounded = sum(1 for r in results if r["grounding"] == "grounded")
-    partial = sum(1 for r in results if r["grounding"] == "partial")
-    ungrounded = sum(1 for r in results if r["grounding"] == "ungrounded")
-    exempt = sum(1 for r in results if r["grounding"] == "exempt")
-    actionable = sum(1 for r in results if r["actionable"])
-    sim_aware = sum(1 for r in results if r["sim_aware"])
-    has_kql = sum(1 for r in results if r["has_kql"])
-    has_mitre = sum(1 for r in results if r["has_mitre"])
-    complete = sum(1 for r in results if r["complete"])
+    for bs in range(0, total, batch_size):
+        be = min(bs + batch_size, total)
+        bn = bs // batch_size + 1
+        tb = (total + batch_size - 1) // batch_size
+        print(f"\n--- Batch {bn}/{tb} ({bs+1}-{be}) ---\n")
+        for i, (q, exp) in enumerate(qs[bs:be]):
+            idx = bs + i + 1
+            sq = q[:60] + ("..." if len(q) > 60 else "")
+            print(f"  [{idx:3d}/{total}] {sq}")
+            r = run_one(cl, q, exp)
+            r.grade = grade_response(r)
+            ic = "PASS" if r.grade.score >= 4 else "WARN" if r.grade.score >= 3 else "FAIL"
+            rl = len(r.response)
+            print(f"           {ic} {r.grade.score}/5 | {r.elapsed_s:.1f}s | route={r.route or 'n/a'} | len={rl}")
+            for n in r.grade.notes[:3]:
+                print(f"           -> {n}")
+            if r.error:
+                print(f"           ERROR: {r.error[:100]}")
+            results.append(r)
+        if be < total:
+            print("\n  Pausing 5s...")
+            time.sleep(5)
+    cl.close()
 
-    gradable = total - exempt
-    grounded_pct = ((grounded + partial) / gradable * 100) if gradable > 0 else 0
+    tr = len(results)
+    er = sum(1 for r in results if r.error)
+    to = sum(1 for r in results if r.status == "timeout")
+    ep = sum(1 for r in results if r.grade.evidence_grounded)
+    ap = sum(1 for r in results if r.grade.actionable)
+    rp = sum(1 for r in results if r.grade.correct_routing)
+    cp = sum(1 for r in results if r.grade.complete)
+    pp = sum(1 for r in results if r.grade.professional)
+    av = sum(r.grade.score for r in results) / max(tr, 1)
+    at = sum(r.elapsed_s for r in results) / max(tr, 1)
 
-    print(f"\n{'='*60}")
-    print(f"  SCORECARD: {label}")
-    print(f"{'='*60}")
-    print(f"  Completed:          {completed}/{total}")
-    print(f"  Errors:             {errors}/{total}")
-    print(f"  ---")
-    print(f"  CORRECT ROUTING:    {route_pass}/{total} ({route_pass/total*100:.0f}%)")
-    print(f"  EVIDENCE-GROUNDED:  {grounded} grounded + {partial} partial + {ungrounded} ungrounded + {exempt} exempt = {grounded_pct:.0f}% of gradable")
-    print(f"  ACTIONABLE:         {actionable}/{total} ({actionable/total*100:.0f}%)")
-    print(f"  SIM DATA AWARE:     {sim_aware}/{total}")
-    print(f"  KQL IN RESPONSE:    {has_kql}/{total}")
-    print(f"  MITRE REFERENCED:   {has_mitre}/{total}")
-    print(f"  COMPLETE RESPONSE:  {complete}/{total}")
+    print(f"\n{sep}")
+    print("EVALUATION SUMMARY")
+    print(f"{sep}\n")
+    print(f"  Total: {tr} | Errors: {er} | Timeouts: {to} | Avg time: {at:.1f}s | Avg score: {av:.1f}/5 ({av/5*100:.0f}%)\n")
+    for label, val in [
+        ("Evidence-Grounded:", ep), ("Actionable Output:", ap),
+        ("Correct Routing:", rp), ("Response Completeness:", cp),
+        ("Professional Tone:", pp),
+    ]:
+        print(f"  {label:<25} {val}/{tr} ({val/max(tr,1)*100:.0f}%)")
+    print()
 
-    # Show failures
-    failures = [r for r in results if not r["route_pass"] or not r["actionable"] or r["grounding"] == "ungrounded" or r["status"] != "completed"]
-    if failures:
-        print(f"\n  --- ISSUES ({len(failures)}) ---")
-        for r in failures:
-            issues = []
-            if not r["route_pass"]:
-                issues.append(f"MISROUTE({r['route']})")
-            if r["grounding"] == "ungrounded":
-                issues.append("UNGROUNDED")
-            if not r["actionable"]:
-                issues.append("VAGUE")
-            if r["status"] != "completed":
-                issues.append(f"ERROR({r['status']})")
-            if issues:
-                print(f"  #{r['i']:3d} [{', '.join(issues)}] {r['prompt']}")
+    dist = {5: 0, 4: 0, 3: 0, 2: 0, 1: 0, 0: 0}
+    for r in results:
+        dist[r.grade.score] = dist.get(r.grade.score, 0) + 1
+    print("  SCORE DISTRIBUTION:")
+    labels = {5: "PERFECT", 4: "GOOD", 3: "OK", 2: "POOR", 1: "BAD", 0: "BAD"}
+    for s in sorted(dist.keys(), reverse=True):
+        print(f"    {s}/5 ({labels[s]:>7}): {dist[s]:3d} {'#' * dist[s]}")
 
-    return results
+    worst = sorted(results, key=lambda r: r.grade.score)[:10]
+    if worst and worst[0].grade.score < 4:
+        print(f"\n  LOWEST SCORING:")
+        for r in worst:
+            if r.grade.score >= 4:
+                break
+            print(f"    [{r.grade.score}/5] {r.question[:70]}")
+            for n in r.grade.notes[:2]:
+                print(f"           -> {n}")
+
+    # Save results
+    os.makedirs(out_dir, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    jp = os.path.join(out_dir, f"eval_{ts}.json")
+    rpt = {
+        "timestamp": ts, "total": tr, "errors": er, "timeouts": to,
+        "avg_time": round(at, 1), "avg_score": round(av, 2),
+        "criteria": {
+            "evidence": {"pass": ep, "pct": round(ep / max(tr, 1) * 100)},
+            "actionable": {"pass": ap, "pct": round(ap / max(tr, 1) * 100)},
+            "routing": {"pass": rp, "pct": round(rp / max(tr, 1) * 100)},
+            "completeness": {"pass": cp, "pct": round(cp / max(tr, 1) * 100)},
+            "professional": {"pass": pp, "pct": round(pp / max(tr, 1) * 100)},
+        },
+        "distribution": dist,
+        "results": [{
+            "q": r.question, "exp": r.expected, "resp": r.response[:2000],
+            "route": r.route, "status": r.status, "rid": r.request_id,
+            "time": round(r.elapsed_s, 1), "err": r.error,
+            "grade": {
+                "score": r.grade.score, "ev": r.grade.evidence_grounded,
+                "ac": r.grade.actionable, "rt": r.grade.correct_routing,
+                "cp": r.grade.complete, "pr": r.grade.professional,
+                "notes": r.grade.notes,
+            },
+        } for r in results],
+    }
+    with open(jp, "w", encoding="utf-8") as f:
+        json.dump(rpt, f, indent=2, default=str)
+
+    cp2 = os.path.join(out_dir, f"eval_{ts}.csv")
+    with open(cp2, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow([
+            "Question", "Score", "Evidence", "Actionable", "Routing",
+            "Complete", "Professional", "Route", "Time", "Status", "Error", "Notes",
+        ])
+        for r in results:
+            w.writerow([
+                r.question[:100], r.grade.score,
+                "P" if r.grade.evidence_grounded else "F",
+                "P" if r.grade.actionable else "F",
+                "P" if r.grade.correct_routing else "F",
+                "P" if r.grade.complete else "F",
+                "P" if r.grade.professional else "F",
+                r.route, round(r.elapsed_s, 1), r.status,
+                r.error[:80], "; ".join(r.grade.notes[:3]),
+            ])
+
+    print(f"\n  JSON: {jp}")
+    print(f"  CSV:  {cp2}")
+    print(f"\n{sep}")
+    print(f"OVERALL: {av:.1f}/5 ({av/5*100:.0f}%)")
+    print(f"{sep}\n")
 
 
 if __name__ == "__main__":
-    print("MSSP Threat Hunt Agent — Live Evaluation")
-    print(f"Date: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Endpoint: {BASE}")
-    print(f"Chat prompts: {len(CHAT_PROMPTS)}")
-    print(f"Campaign prompts: {len(CAMPAIGN_PROMPTS)}")
-
-    # Run chat eval
-    chat_results = run_eval(CHAT_PROMPTS, "chat", "A: CHAT")
-
-    # Run campaign eval
-    campaign_results = run_eval(CAMPAIGN_PROMPTS, "campaign", "B: CAMPAIGNS")
-
-    # Combined scorecard
-    all_results = chat_results + campaign_results
-    total = len(all_results)
-    completed = sum(1 for r in all_results if r["status"] == "completed")
-    route_pass = sum(1 for r in all_results if r["route_pass"])
-    actionable = sum(1 for r in all_results if r["actionable"])
-
-    print(f"\n{'='*60}")
-    print(f"  COMBINED SCORECARD ({total} prompts)")
-    print(f"{'='*60}")
-    print(f"  Completed:       {completed}/{total} ({completed/total*100:.0f}%)")
-    print(f"  Correct Routing: {route_pass}/{total} ({route_pass/total*100:.0f}%)")
-    print(f"  Actionable:      {actionable}/{total} ({actionable/total*100:.0f}%)")
-    print(f"  Zero Errors:     {'YES' if completed == total else 'NO'}")
+    pa = argparse.ArgumentParser()
+    pa.add_argument("--csv", default="tests/eval_quick_functional.csv")
+    pa.add_argument("--batch-size", type=int, default=10)
+    pa.add_argument("--max-questions", type=int, default=0)
+    pa.add_argument("--output-dir", default="tests/eval_results")
+    a = pa.parse_args()
+    run_eval(a.csv, a.batch_size, a.max_questions, a.output_dir)

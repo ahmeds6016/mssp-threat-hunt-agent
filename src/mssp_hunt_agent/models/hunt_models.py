@@ -19,6 +19,7 @@ class QueryIntent(str, Enum):
     ANOMALY_CANDIDATE = "anomaly_candidate"
     PIVOT = "pivot"
     CONFIRMATION = "confirmation"
+    IOC_HUNT = "ioc_hunt"
 
 
 class SafetyFlag(BaseModel):

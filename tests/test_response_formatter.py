@@ -99,13 +99,13 @@ class TestFormatResponse:
         assert "You can also try:" in text
         assert "Try this" in text
 
-    def test_strips_markdown_from_summary(self) -> None:
+    def test_preserves_markdown_in_summary(self) -> None:
         response = AgentResponse(
             summary="Rule:\n```kql\nSecurityEvent\n```",
             intent=AgentIntent.GENERAL_QUESTION,
         )
         text = format_response(response)
-        assert "```" not in text
+        assert "```kql" in text
         assert "SecurityEvent" in text
 
     def test_hunt_response(self) -> None:
