@@ -50,6 +50,33 @@ def _get_config():
     return HuntAgentConfig.from_env()
 
 
+def _build_sentinel_adapter(config):
+    """Return a Sentinel adapter — real when credentials are configured, mock otherwise.
+
+    Mirrors the construction in ``ToolExecutor._get_sentinel_adapter`` so HTTP
+    endpoints that need direct workspace access (KEV scan, intel pipeline) get
+    the same auth path the agent loop uses.
+    """
+    if config.adapter_mode == "real" and config.sentinel_workspace_id:
+        from mssp_hunt_agent.adapters.sentinel.adapter import SentinelAdapter
+        from mssp_hunt_agent.adapters.sentinel.api_client import SentinelQueryClient
+        from mssp_hunt_agent.adapters.sentinel.auth import SentinelAuth
+
+        auth = SentinelAuth(
+            tenant_id=config.azure_tenant_id,
+            client_id=config.azure_client_id,
+            client_secret=config.azure_client_secret,
+        )
+        client = SentinelQueryClient(
+            workspace_id=config.sentinel_workspace_id,
+            auth=auth,
+        )
+        return SentinelAdapter(client=client, max_results=config.agent_loop_max_kql_results)
+
+    from mssp_hunt_agent.adapters.sentinel.mock import MockSentinelAdapter
+    return MockSentinelAdapter()
+
+
 def _extract_message(body: dict) -> tuple[str | None, str | None]:
     """Extract and validate the message field. Returns (message, error)."""
     message = body.get("message", "") or body.get("text", "")
@@ -1106,6 +1133,158 @@ def get_intel_reports(req: func.HttpRequest) -> func.HttpResponse:
         return _json_response({"reports": reports[:50]})
     except Exception as exc:
         logger.warning("Failed to list intel reports: %s", exc)
+        return _json_response({"reports": [], "error": str(exc)})
+
+
+@app.function_name("KEVScan")
+@app.route(route="api/v1/kev-scan", methods=["POST"])
+def kev_scan(req: func.HttpRequest) -> func.HttpResponse:
+    """Trigger a CISA KEV scan — fetches the catalog, hunts each new CVE,
+    and emails reports for any confirmed exposure.
+
+    Body (all optional):
+    {
+        "recipients": ["analyst@company.com"],
+        "max_alerts": 25,
+        "dry_run": false
+    }
+
+    Returns 202 immediately. Poll GET /api/v1/kev-scan/{scan_id} for results.
+    """
+    import uuid as _uuid_mod
+    scan_id = f"KEVSCAN-{_uuid_mod.uuid4().hex[:8]}"
+
+    try:
+        body = req.get_json()
+    except ValueError:
+        body = {}
+
+    recipients = body.get("recipients", [])
+    max_alerts = int(body.get("max_alerts", 25) or 25)
+    dry_run = bool(body.get("dry_run", False))
+
+    logger.info(
+        "[%s] KEV scan triggered | recipients=%s max_alerts=%d dry_run=%s",
+        scan_id, recipients, max_alerts, dry_run,
+    )
+
+    store = _get_state_store()
+    with _state_lock:
+        store.save_request(scan_id, {
+            "scan_id": scan_id,
+            "status": "running",
+        })
+
+    def _run_kev_scan():
+        try:
+            from mssp_hunt_agent.intel.kev_pipeline import KEVPipeline
+            from mssp_hunt_agent.persistence.email_delivery import EmailSender
+
+            config = _get_config()
+            adapter = _build_sentinel_adapter(config)
+
+            email_sender = None
+            if (recipients and config.azure_tenant_id and config.azure_client_id
+                    and config.azure_client_secret):
+                sender_email = os.getenv("INTEL_SENDER_EMAIL", "")
+                if sender_email:
+                    email_sender = EmailSender(
+                        tenant_id=config.azure_tenant_id,
+                        client_id=config.azure_client_id,
+                        client_secret=config.azure_client_secret,
+                        sender_email=sender_email,
+                    )
+
+            local_store = _get_state_store()
+            pipeline = KEVPipeline(
+                config=config,
+                adapter=adapter,
+                blob_store=local_store,
+                email_sender=email_sender,
+                max_alerts_per_scan=max_alerts,
+            )
+            result = pipeline.run_scan(
+                recipients=recipients if email_sender else None,
+                dry_run=dry_run,
+            )
+
+            with _state_lock:
+                local_store.save_request(scan_id, {
+                    "scan_id": scan_id,
+                    "status": "completed",
+                    **result.to_dict(),
+                })
+
+            logger.info(
+                "[%s] KEV scan complete: discovered=%d processed=%d exposed=%d "
+                "inconclusive=%d not_exposed=%d escalation=%d emails=%d",
+                scan_id, result.alerts_discovered, result.alerts_processed,
+                result.exposed_count, result.inconclusive_count,
+                result.not_exposed_count, result.escalation_count, result.emails_sent,
+            )
+
+        except Exception as exc:
+            logger.exception("[%s] KEV scan failed", scan_id)
+            local_store = _get_state_store()
+            with _state_lock:
+                local_store.save_request(scan_id, {
+                    "scan_id": scan_id,
+                    "status": "error",
+                    "error": f"KEV scan failed: {exc.__class__.__name__}",
+                })
+
+    thread = threading.Thread(target=_run_kev_scan, daemon=True)
+    thread.start()
+
+    return _json_response({
+        "scan_id": scan_id,
+        "status": "running",
+        "message": f"KEV scan started. Poll GET /api/v1/kev-scan/{scan_id} for results.",
+    }, 202)
+
+
+@app.function_name("GetKEVScanResult")
+@app.route(route="api/v1/kev-scan/{scan_id}", methods=["GET"])
+def get_kev_scan_result(req: func.HttpRequest) -> func.HttpResponse:
+    """Poll for KEV scan results."""
+    scan_id = req.route_params.get("scan_id", "")
+    store = _get_state_store()
+    with _state_lock:
+        entry = store.get_request(scan_id)
+    if not entry:
+        return _json_response({"error": f"Scan {scan_id} not found"}, 404)
+    return _json_response(entry)
+
+
+@app.function_name("GetKEVReports")
+@app.route(route="api/v1/kev-reports", methods=["GET"])
+def get_kev_reports(req: func.HttpRequest) -> func.HttpResponse:
+    """List recent KEV exposure assessment reports."""
+    store = _get_state_store()
+    if not store.blob_enabled:
+        return _json_response({"reports": [], "message": "Blob storage not configured"})
+
+    try:
+        container = store._client.get_container_client(store._container_name)
+        reports = []
+        for blob in container.list_blobs(name_starts_with="kev-reports/RPT-"):
+            if blob.name.endswith(".json"):
+                data = store._download_json(blob.name)
+                if data:
+                    reports.append({
+                        "report_id": data.get("report_id", ""),
+                        "generated_at": data.get("generated_at", ""),
+                        "intel_event_title": data.get("intel_event_title", ""),
+                        "cves": data.get("cves", []),
+                        "verdict": data.get("verdict", ""),
+                        "risk_level": data.get("risk_level", ""),
+                        "hunt_findings_count": data.get("hunt_findings_count", 0),
+                        "campaign_id": data.get("campaign_id", ""),
+                    })
+        reports.sort(key=lambda r: r.get("generated_at", ""), reverse=True)
+        return _json_response({"reports": reports[:50]})
+    except Exception as exc:
+        logger.warning("Failed to list KEV reports: %s", exc)
         return _json_response({"reports": [], "error": str(exc)})
 
 
